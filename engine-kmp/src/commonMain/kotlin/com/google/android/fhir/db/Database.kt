@@ -18,6 +18,7 @@ package com.google.android.fhir.db
 
 import com.google.android.fhir.LocalChange
 import com.google.android.fhir.LocalChangeToken
+import com.google.android.fhir.search.ReferencedResourceResult
 import com.google.android.fhir.search.SearchQuery
 import com.google.fhir.model.r4.Resource
 import com.google.fhir.model.r4.terminologies.ResourceType
@@ -84,6 +85,8 @@ internal interface Database {
   suspend fun <R : Resource> search(query: SearchQuery): List<ResourceWithUUID<R>>
 
   suspend fun count(query: SearchQuery): Long
+
+  suspend fun searchReferencedResources(query: SearchQuery): List<ReferencedResourceResult>
 
   /**
    * Retrieves all [LocalChange]s for all [Resource]s, which can be used to update the remote FHIR
