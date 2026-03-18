@@ -16,108 +16,183 @@
 
 package com.google.android.fhir.sync.upload
 
-import co.touchlab.kermit.Logger
+import com.google.android.fhir.LocalChangeToken
 import com.google.android.fhir.db.Database
-import com.google.android.fhir.sync.upload.request.HttpVerb
+import com.google.android.fhir.resourceType
+import com.google.android.fhir.sync.upload.request.UploadRequestGeneratorMode
+import com.google.fhir.model.r4.Resource
 import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlin.time.Instant
 
-/** Consolidates resources in the local database after a successful upload. */
+/**
+ * Represents a mechanism to consolidate resources after they are uploaded.
+ *
+ * INTERNAL ONLY. This interface should NEVER been exposed as an external API because it works
+ * together with other components in the upload package to fulfill a specific upload strategy. After
+ * a resource is uploaded to a remote FHIR server and a response is returned, we need to consolidate
+ * any changes in the database, Examples of this would be, updating the lastUpdated timestamp field,
+ * or deleting the local change from the database, or updating the resource IDs and payloads to
+ * correspond with the server's feedback.
+ */
 internal fun interface ResourceConsolidator {
+
+  /** Consolidates the local change token with the provided response from the FHIR server. */
   suspend fun consolidate(uploadRequestResult: UploadRequestResult)
 }
 
-/**
- * Default consolidator that updates version IDs and last updated timestamps after a successful
- * upload, and deletes the local change tokens.
- */
-internal class DefaultResourceConsolidator(
-  private val database: Database,
-) : ResourceConsolidator {
+/** Default implementation of [ResourceConsolidator] that uses the database to aid consolidation. */
+internal class DefaultResourceConsolidator(private val database: Database) : ResourceConsolidator {
 
-  override suspend fun consolidate(uploadRequestResult: UploadRequestResult) {
+  override suspend fun consolidate(uploadRequestResult: UploadRequestResult) =
     when (uploadRequestResult) {
       is UploadRequestResult.Success -> {
-        uploadRequestResult.successfulUploadResponseMappings.forEach { mapping ->
-          val versionId = mapping.output.meta?.versionId?.value
-          val lastUpdated =
-            mapping.output.meta?.lastUpdated?.value?.toString()?.let {
-              Instant.parse(it)
+        database.deleteUpdates(
+          LocalChangeToken(
+            uploadRequestResult.successfulUploadResponseMappings.flatMap {
+              it.localChanges.flatMap { localChange -> localChange.token.ids }
+            },
+          ),
+        )
+        uploadRequestResult.successfulUploadResponseMappings.forEach {
+          when (it) {
+            is BundleComponentUploadResponseMapping -> {
+              updateResourceMeta(it)
             }
-          if (versionId != null && lastUpdated != null) {
-            database.updateVersionIdAndLastUpdated(
-              mapping.localChange.resourceId,
-              ResourceType.valueOf(mapping.localChange.resourceType),
-              versionId,
-              lastUpdated,
-            )
+            is ResourceUploadResponseMapping -> {
+              updateResourceMeta(it.output)
+            }
           }
-          database.deleteUpdates(mapping.localChange.token)
         }
       }
       is UploadRequestResult.Failure -> {
-        Logger.w("DefaultResourceConsolidator") {
-          "Upload failed for ${uploadRequestResult.localChanges.size} changes: " +
-            "${uploadRequestResult.uploadError.exception.message}"
+        /* For now, do nothing (we do not delete the local changes from the database as they were
+        not uploaded successfully. In the future, add consolidation required if upload fails.
+         */
+      }
+    }
+
+  private suspend fun updateResourceMeta(response: BundleComponentUploadResponseMapping) {
+    response.resourceIdAndType?.let { (id, type) ->
+      database.updateVersionIdAndLastUpdated(
+        id,
+        type,
+        response.etag?.let { getVersionFromETag(it) },
+        response.lastModified?.let { Instant.parse(it) },
+      )
+    }
+  }
+
+  private suspend fun updateResourceMeta(resource: Resource) {
+    database.updateVersionIdAndLastUpdated(
+      resource.id ?: return,
+      ResourceType.valueOf(resource.resourceType),
+      resource.meta?.versionId?.value,
+      resource.meta?.lastUpdated?.value?.toString()?.let { Instant.parse(it) },
+    )
+  }
+}
+
+internal class HttpPostResourceConsolidator(private val database: Database) : ResourceConsolidator {
+  override suspend fun consolidate(uploadRequestResult: UploadRequestResult) =
+    when (uploadRequestResult) {
+      is UploadRequestResult.Success -> {
+        uploadRequestResult.successfulUploadResponseMappings.forEach { responseMapping ->
+          when (responseMapping) {
+            is BundleComponentUploadResponseMapping -> {
+              responseMapping.localChanges.firstOrNull()?.resourceId?.let { preSyncResourceId ->
+                database.deleteUpdates(
+                  LocalChangeToken(
+                    responseMapping.localChanges.flatMap { localChange -> localChange.token.ids },
+                  ),
+                )
+                updateResourcePostSync(
+                  preSyncResourceId,
+                  responseMapping,
+                )
+              }
+            }
+            is ResourceUploadResponseMapping -> {
+              database.deleteUpdates(
+                LocalChangeToken(
+                  responseMapping.localChanges.flatMap { localChange -> localChange.token.ids },
+                ),
+              )
+              responseMapping.localChanges.firstOrNull()?.resourceId?.let { preSyncResourceId ->
+                database.updateResourceAndReferences(
+                  preSyncResourceId,
+                  responseMapping.output,
+                )
+              }
+            }
+          }
         }
       }
+      is UploadRequestResult.Failure -> {
+        /* For now, do nothing (we do not delete the local changes from the database as they were
+        not uploaded successfully. In the future, add consolidation required if upload fails.
+         */
+      }
+    }
+
+  private suspend fun updateResourcePostSync(
+    preSyncResourceId: String,
+    response: BundleComponentUploadResponseMapping,
+  ) {
+    response.resourceIdAndType?.let { (postSyncResourceID, resourceType) ->
+      database.updateResourcePostSync(
+        preSyncResourceId,
+        postSyncResourceID,
+        resourceType,
+        response.etag?.let { getVersionFromETag(it) },
+        response.lastModified?.let { Instant.parse(it) },
+      )
     }
   }
 }
 
 /**
- * Consolidator for HTTP POST creates that also handles resource ID updates when the server assigns
- * a different ID.
+ * FHIR uses weak ETag that look something like W/"MTY4NDMyODE2OTg3NDUyNTAwMA", so we need to
+ * extract version from it. See https://hl7.org/fhir/http.html#Http-Headers.
  */
-internal class HttpPostResourceConsolidator(
-  private val database: Database,
-) : ResourceConsolidator {
-
-  override suspend fun consolidate(uploadRequestResult: UploadRequestResult) {
-    when (uploadRequestResult) {
-      is UploadRequestResult.Success -> {
-        uploadRequestResult.successfulUploadResponseMappings.forEach { mapping ->
-          val outputId = mapping.output.id
-          val localId = mapping.localChange.resourceId
-
-          // If server assigned a different ID, update references
-          if (outputId != null && outputId != localId) {
-            database.updateResourceAndReferences(
-              currentResourceId = localId,
-              updatedResource = mapping.output,
-            )
-          }
-
-          val versionId = mapping.output.meta?.versionId?.value
-          val lastUpdated =
-            mapping.output.meta?.lastUpdated?.value?.toString()?.let {
-              Instant.parse(it)
-            }
-          if (versionId != null && lastUpdated != null) {
-            database.updateVersionIdAndLastUpdated(
-              mapping.localChange.resourceId,
-              ResourceType.valueOf(mapping.localChange.resourceType),
-              versionId,
-              lastUpdated,
-            )
-          }
-          database.deleteUpdates(mapping.localChange.token)
-        }
-      }
-      is UploadRequestResult.Failure -> {
-        Logger.w("HttpPostResourceConsolidator") {
-          "Upload failed for ${uploadRequestResult.localChanges.size} changes: " +
-            "${uploadRequestResult.uploadError.exception.message}"
-        }
-      }
-    }
+private fun getVersionFromETag(eTag: String) =
+  // The server should always return a weak etag that starts with W, but if it server returns a
+  // strong tag, we store it as-is. The http-headers for conditional upload like if-match will
+  // always add value as a weak tag.
+  if (eTag.startsWith("W/")) {
+    eTag.split("\"")[1]
+  } else {
+    eTag
   }
-}
+
+/**
+ * May return a Pair of versionId and resource type extracted from the
+ * [BundleComponentUploadResponseMapping.location].
+ *
+ * Location may be:
+ * 1. absolute path: `<server-path>/<resource-type>/<resource-id>/_history/<version>`
+ * 2. relative path: `<resource-type>/<resource-id>/_history/<version>`
+ */
+internal val BundleComponentUploadResponseMapping.resourceIdAndType: Pair<String, ResourceType>?
+  get() =
+    location
+      ?.split("/")
+      ?.takeIf { it.size > 3 }
+      ?.let { it[it.size - 3] to ResourceType.valueOf(it[it.size - 4]) }
 
 internal object ResourceConsolidatorFactory {
-  fun byHttpVerb(httpVerb: HttpVerb, database: Database): ResourceConsolidator =
-    when (httpVerb) {
-      HttpVerb.POST -> HttpPostResourceConsolidator(database)
-      else -> DefaultResourceConsolidator(database)
+  fun byHttpVerb(
+    uploadRequestMode: UploadRequestGeneratorMode,
+    database: Database,
+  ): ResourceConsolidator {
+    val httpVerbToUse =
+      when (uploadRequestMode) {
+        is UploadRequestGeneratorMode.UrlRequest -> uploadRequestMode.httpVerbForCreate
+        is UploadRequestGeneratorMode.BundleRequest -> uploadRequestMode.httpVerbForCreate
+      }
+    return if (httpVerbToUse.toString() == "POST") {
+      HttpPostResourceConsolidator(database)
+    } else {
+      DefaultResourceConsolidator(database)
     }
+  }
 }
