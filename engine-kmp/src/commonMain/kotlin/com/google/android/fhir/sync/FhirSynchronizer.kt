@@ -16,89 +16,138 @@
 
 package com.google.android.fhir.sync
 
-import co.touchlab.kermit.Logger
+import com.google.android.fhir.FhirEngine
+import com.google.android.fhir.sync.download.DownloadState
 import com.google.android.fhir.sync.download.Downloader
-import com.google.android.fhir.sync.upload.ResourceConsolidator
 import com.google.android.fhir.sync.upload.ResourceSyncException
+import com.google.android.fhir.sync.upload.UploadStrategy
 import com.google.android.fhir.sync.upload.Uploader
-import com.google.android.fhir.sync.upload.UploadRequestResult
-import com.google.android.fhir.sync.upload.LocalChangeFetcher
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** Orchestrates FHIR synchronization by coordinating download and upload operations. */
+private sealed class SyncResult {
+  val timestamp: Instant = Clock.System.now()
+
+  class Success : SyncResult()
+
+  data class Error(val exceptions: List<ResourceSyncException>) : SyncResult()
+}
+
+internal data class UploadConfiguration(
+  val uploader: Uploader,
+  val uploadStrategy: UploadStrategy,
+)
+
+internal class DownloadConfiguration(
+  val downloader: Downloader,
+  val conflictResolver: ConflictResolver,
+)
+
+/** Class that helps synchronize the data source and save it in the local database */
 internal class FhirSynchronizer(
-  private val uploader: Uploader,
-  private val resourceConsolidator: ResourceConsolidator,
-  private val localChangeFetcher: LocalChangeFetcher,
+  private val fhirEngine: FhirEngine,
+  private val uploadConfiguration: UploadConfiguration,
+  private val downloadConfiguration: DownloadConfiguration,
 ) {
 
   private val _syncState = MutableSharedFlow<SyncJobStatus>()
-  val syncState: SharedFlow<SyncJobStatus> = _syncState.asSharedFlow()
-  private val mutex = Mutex()
+  val syncState: SharedFlow<SyncJobStatus> = _syncState
 
-  /** Runs the upload synchronization, emitting [SyncJobStatus] updates. */
-  suspend fun upload(): SyncJobStatus {
-    return mutex.withLock {
-      _syncState.emit(SyncJobStatus.Started())
+  private suspend fun setSyncState(state: SyncJobStatus) = _syncState.emit(state)
 
-      try {
-        val result = performUpload()
-        _syncState.emit(result)
-        result
-      } catch (e: Exception) {
-        Logger.e("FhirSynchronizer") { "Upload failed: ${e.message}" }
-        val failed =
-          SyncJobStatus.Failed(
-            exceptions =
-              listOf(
-                ResourceSyncException(
-                  resourceType = "Unknown",
-                  exception = e,
-                ),
-              ),
-          )
-        _syncState.emit(failed)
-        failed
+  private suspend fun setSyncState(result: SyncResult): SyncJobStatus {
+    val state =
+      when (result) {
+        is SyncResult.Success -> SyncJobStatus.Succeeded()
+        is SyncResult.Error -> SyncJobStatus.Failed(result.exceptions)
       }
+
+    setSyncState(state)
+    return state
+  }
+
+  /**
+   * Manages the sequential execution of downloading and uploading for coordinated operation. This
+   * function is coroutine-safe, ensuring that multiple invocations will not interfere with each
+   * other.
+   */
+  suspend fun synchronize(): SyncJobStatus {
+    mutex.withLock {
+      setSyncState(SyncJobStatus.Started())
+
+      return listOf(download(), upload())
+        .filterIsInstance<SyncResult.Error>()
+        .flatMap { it.exceptions }
+        .let {
+          if (it.isEmpty()) {
+            setSyncState(SyncResult.Success())
+          } else {
+            setSyncState(SyncResult.Error(it))
+          }
+        }
     }
   }
 
-  private suspend fun performUpload(): SyncJobStatus {
-    var totalUploaded = 0
-    val errors = mutableListOf<ResourceSyncException>()
-
-    while (localChangeFetcher.hasNext()) {
-      val (localChanges, references) = localChangeFetcher.next()
-
-      _syncState.emit(
-        SyncJobStatus.InProgress(
-          syncOperation = SyncOperation.UPLOAD,
-          total = localChangeFetcher.total,
-          completed = totalUploaded,
-        ),
-      )
-
-      uploader.upload(localChanges, references).collect { result ->
-        resourceConsolidator.consolidate(result)
-        when (result) {
-          is UploadRequestResult.Success -> {
-            totalUploaded += result.successfulUploadResponseMappings.size
-          }
-          is UploadRequestResult.Failure -> {
-            errors.add(result.uploadError)
+  private suspend fun download(): SyncResult {
+    val exceptions = mutableListOf<ResourceSyncException>()
+    fhirEngine.syncDownload(downloadConfiguration.conflictResolver) {
+      flow {
+        downloadConfiguration.downloader.download().collect {
+          when (it) {
+            is DownloadState.Started -> {
+              setSyncState(SyncJobStatus.InProgress(SyncOperation.DOWNLOAD, it.total))
+            }
+            is DownloadState.Success -> {
+              setSyncState(SyncJobStatus.InProgress(SyncOperation.DOWNLOAD, it.total, it.completed))
+              emit(it.resources)
+            }
+            is DownloadState.Failure -> {
+              exceptions.add(
+                ResourceSyncException(
+                  resourceType = it.syncError.resourceType,
+                  exception = it.syncError.exception,
+                ),
+              )
+            }
           }
         }
       }
     }
-
-    return if (errors.isEmpty()) {
-      SyncJobStatus.Succeeded()
+    return if (exceptions.isEmpty()) {
+      SyncResult.Success()
     } else {
-      SyncJobStatus.Failed(exceptions = errors)
+      SyncResult.Error(exceptions)
     }
+  }
+
+  private suspend fun upload(): SyncResult {
+    val exceptions = mutableListOf<ResourceSyncException>()
+    fhirEngine
+      .syncUpload(uploadConfiguration.uploadStrategy, uploadConfiguration.uploader::upload)
+      .collect { progress ->
+        progress.uploadError?.let { exceptions.add(it) }
+          ?: setSyncState(
+            SyncJobStatus.InProgress(
+              SyncOperation.UPLOAD,
+              progress.initialTotal,
+              progress.initialTotal - progress.remaining,
+            ),
+          )
+      }
+
+    return if (exceptions.isEmpty()) {
+      SyncResult.Success()
+    } else {
+      SyncResult.Error(exceptions)
+    }
+  }
+
+  companion object {
+    private val mutex = Mutex()
   }
 }

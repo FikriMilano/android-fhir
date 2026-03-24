@@ -78,3 +78,5 @@ include(":datacapture-kmp")
 include(":sdc-kmp-demo")
 
 include(":engine-kmp")
+
+include(":engine-kmp-app")

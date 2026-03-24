@@ -18,101 +18,78 @@ package com.google.android.fhir.sync.upload
 
 import com.google.android.fhir.LocalChange
 import com.google.android.fhir.db.Database
-import com.google.android.fhir.db.LocalChangeResourceReference
 
-/** Fetches local changes from the database in batches for upload. */
+/**
+ * Fetches local changes.
+ *
+ * This interface provides methods to check for the existence of further changes, retrieve the next
+ * batch of changes, and get the progress of fetched changes.
+ *
+ * It is marked as internal to keep [Database] unexposed to clients
+ */
 internal interface LocalChangeFetcher {
-  /** The total number of local changes to upload. */
+
+  /** Represents the initial total number of local changes to upload. */
   val total: Int
 
-  /** Returns `true` if there are more local changes to fetch. */
+  /** Checks if there are more local changes to be fetched. */
   suspend fun hasNext(): Boolean
 
-  /** Fetches the next batch of local changes and their resource references. */
-  suspend fun next(): Pair<List<LocalChange>, List<LocalChangeResourceReference>>
+  /** Retrieves the next batch of local changes. */
+  suspend fun next(): List<LocalChange>
 
-  /** Returns the current upload progress. */
-  fun getProgress(uploadError: ResourceSyncException? = null): SyncUploadProgress
+  /**
+   * Returns [SyncUploadProgress], which contains the remaining changes left to upload and the
+   * initial total to upload.
+   */
+  suspend fun getProgress(): SyncUploadProgress
 }
 
-/** Fetches all local changes at once. */
 internal class AllChangesLocalChangeFetcher(
   private val database: Database,
 ) : LocalChangeFetcher {
 
-  private var localChanges: List<LocalChange>? = null
-  private var fetched = false
+  private var _total: Int = 0
 
   override val total: Int
-    get() = localChanges?.size ?: 0
+    get() = _total
 
-  override suspend fun hasNext(): Boolean {
-    if (localChanges == null) {
-      localChanges = database.getAllLocalChanges()
-    }
-    return !fetched && localChanges!!.isNotEmpty()
+  suspend fun initTotalCount() {
+    _total = database.getLocalChangesCount()
   }
 
-  override suspend fun next(): Pair<List<LocalChange>, List<LocalChangeResourceReference>> {
-    if (localChanges == null) {
-      localChanges = database.getAllLocalChanges()
-    }
-    fetched = true
-    val changes = localChanges!!
-    val references =
-      database.getLocalChangeResourceReferences(changes.flatMap { it.token.ids })
-    return changes to references
-  }
+  override suspend fun hasNext(): Boolean = database.getLocalChangesCount().isNotZero()
 
-  override fun getProgress(uploadError: ResourceSyncException?): SyncUploadProgress {
-    val remaining = if (fetched) 0 else (localChanges?.size ?: 0)
-    return SyncUploadProgress(
-      remaining = remaining,
-      initialTotal = total,
-      uploadError = uploadError,
-    )
-  }
+  override suspend fun next(): List<LocalChange> = database.getAllLocalChanges()
+
+  override suspend fun getProgress(): SyncUploadProgress =
+    SyncUploadProgress(database.getLocalChangesCount(), _total)
 }
 
-/** Fetches local changes per earliest changed resource. */
 internal class PerResourceLocalChangeFetcher(
   private val database: Database,
 ) : LocalChangeFetcher {
 
   private var _total: Int = 0
-  private var uploaded: Int = 0
-  private var initialized = false
 
   override val total: Int
     get() = _total
 
-  override suspend fun hasNext(): Boolean {
-    if (!initialized) {
-      _total = database.getLocalChangesCount()
-      initialized = true
-    }
-    return uploaded < _total
+  suspend fun initTotalCount() {
+    _total = database.getLocalChangesCount()
   }
 
-  override suspend fun next(): Pair<List<LocalChange>, List<LocalChangeResourceReference>> {
-    val changes = database.getAllChangesForEarliestChangedResource()
-    val references =
-      database.getLocalChangeResourceReferences(changes.flatMap { it.token.ids })
-    uploaded += changes.size
-    return changes to references
-  }
+  override suspend fun hasNext(): Boolean = database.getLocalChangesCount().isNotZero()
 
-  override fun getProgress(uploadError: ResourceSyncException?): SyncUploadProgress {
-    return SyncUploadProgress(
-      remaining = _total - uploaded,
-      initialTotal = _total,
-      uploadError = uploadError,
-    )
-  }
+  override suspend fun next(): List<LocalChange> =
+    database.getAllChangesForEarliestChangedResource()
+
+  override suspend fun getProgress(): SyncUploadProgress =
+    SyncUploadProgress(database.getLocalChangesCount(), _total)
 }
 
-/** Mode for fetching local changes. */
-internal sealed class LocalChangesFetchMode {
+/** Represents the mode in which local changes should be fetched. */
+sealed class LocalChangesFetchMode {
   data object AllChanges : LocalChangesFetchMode()
 
   data object PerResource : LocalChangesFetchMode()
@@ -121,10 +98,17 @@ internal sealed class LocalChangesFetchMode {
 }
 
 internal object LocalChangeFetcherFactory {
-  fun byMode(mode: LocalChangesFetchMode, database: Database): LocalChangeFetcher =
+  suspend fun byMode(
+    mode: LocalChangesFetchMode,
+    database: Database,
+  ): LocalChangeFetcher =
     when (mode) {
-      is LocalChangesFetchMode.AllChanges -> AllChangesLocalChangeFetcher(database)
-      is LocalChangesFetchMode.PerResource -> PerResourceLocalChangeFetcher(database)
-      is LocalChangesFetchMode.EarliestChange -> PerResourceLocalChangeFetcher(database)
+      is LocalChangesFetchMode.AllChanges ->
+        AllChangesLocalChangeFetcher(database).apply { initTotalCount() }
+      is LocalChangesFetchMode.PerResource ->
+        PerResourceLocalChangeFetcher(database).apply { initTotalCount() }
+      else -> throw NotImplementedError("$mode is not implemented yet.")
     }
 }
+
+private fun Int.isNotZero() = this != 0

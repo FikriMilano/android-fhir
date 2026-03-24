@@ -42,9 +42,11 @@ internal constructor(
       squash: Boolean = true,
       bundleSize: Int = 500,
     ): UploadStrategy {
-      require(squash) {
-        "Bundle requests without squashing are not supported. " +
-          "Use forIndividualRequest() for per-change uploads."
+      if (methodForUpdate == HttpUpdateMethod.PUT) {
+        throw NotImplementedError("PUT for UPDATE not supported yet.")
+      }
+      if (!squash) {
+        throw NotImplementedError("No squashing with bundle uploading not supported yet.")
       }
       return UploadStrategy(
         localChangesFetchMode = LocalChangesFetchMode.AllChanges,
@@ -70,10 +72,16 @@ internal constructor(
       methodForUpdate: HttpUpdateMethod = HttpUpdateMethod.PATCH,
       squash: Boolean = true,
     ): UploadStrategy {
+      if (methodForUpdate == HttpUpdateMethod.PUT) {
+        throw NotImplementedError("PUT for UPDATE not supported yet.")
+      }
+      require(methodForUpdate != HttpUpdateMethod.PUT || squash) {
+        "Http method PUT not supported for UPDATE with squash set as false."
+      }
       return UploadStrategy(
         localChangesFetchMode =
           if (squash) LocalChangesFetchMode.AllChanges
-          else LocalChangesFetchMode.PerResource,
+          else LocalChangesFetchMode.EarliestChange,
         patchGeneratorMode =
           if (squash) PatchGeneratorMode.PerResource
           else PatchGeneratorMode.PerChange,

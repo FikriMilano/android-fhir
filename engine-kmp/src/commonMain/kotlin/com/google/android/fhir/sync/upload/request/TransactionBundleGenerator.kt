@@ -16,66 +16,62 @@
 
 package com.google.android.fhir.sync.upload.request
 
+import com.google.android.fhir.ContentTypes
 import com.google.android.fhir.sync.upload.patch.Patch
 import com.google.android.fhir.sync.upload.patch.PatchMapping
 import com.google.android.fhir.sync.upload.patch.StronglyConnectedPatchMappings
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 
-/**
- * Generates [BundleUploadRequest]s that pack multiple patches into FHIR Transaction Bundles.
- *
- * Strongly connected patch mappings are kept together in the same bundle to maintain referential
- * integrity during upload.
- */
+/** Generates list of [BundleUploadRequest] of type Transaction Bundle from the [Patch]es */
 internal class TransactionBundleGenerator(
-  private val httpVerbForCreate: HttpVerb,
-  private val httpVerbForUpdate: HttpVerb,
-  private val bundleSize: Int,
+  private val generatedBundleSize: Int,
+  private val useETagForUpload: Boolean,
+  private val getBundleEntryForPatch: (patch: Patch, useETagForUpload: Boolean) -> JsonObject,
 ) : UploadRequestGenerator {
 
   private val json = Json { ignoreUnknownKeys = true }
 
+  /**
+   * In order to accommodate cyclic dependencies between [PatchMapping]s and maintain referential
+   * integrity on the server, the [PatchMapping]s in a [StronglyConnectedPatchMappings] are all put
+   * in a single [BundleUploadRequest]. Based on the [generatedBundleSize], the remaining space of
+   * the [BundleUploadRequest] maybe filled with other [StronglyConnectedPatchMappings] mappings.
+   *
+   * In case a single [StronglyConnectedPatchMappings] has more [PatchMapping]s than the
+   * [generatedBundleSize], [generatedBundleSize] will be ignored so that all of the dependent
+   * mappings in [StronglyConnectedPatchMappings] can be sent in a single Bundle.
+   */
   override fun generateUploadRequests(
-    mappings: List<StronglyConnectedPatchMappings>,
+    mappedPatches: List<StronglyConnectedPatchMappings>,
   ): List<UploadRequest> {
-    val requests = mutableListOf<BundleUploadRequest>()
-    val currentBatch = mutableListOf<PatchMapping>()
+    val mappingsPerBundle = mutableListOf<List<PatchMapping>>()
 
-    for (scc in mappings) {
-      // If SCC is larger than bundle size, it must go in its own bundle
-      if (scc.patchMappings.size > bundleSize) {
-        // Flush current batch first
-        if (currentBatch.isNotEmpty()) {
-          requests.add(createBundleRequest(currentBatch.toList()))
-          currentBatch.clear()
+    var bundle = mutableListOf<PatchMapping>()
+    mappedPatches.forEach {
+      if ((bundle.size + it.patchMappings.size) <= generatedBundleSize) {
+        bundle.addAll(it.patchMappings)
+      } else {
+        if (bundle.isNotEmpty()) {
+          mappingsPerBundle.add(bundle)
+          bundle = mutableListOf()
         }
-        requests.add(createBundleRequest(scc.patchMappings))
-        continue
+        bundle.addAll(it.patchMappings)
       }
-
-      // If adding this SCC would exceed bundle size, flush current batch
-      if (currentBatch.size + scc.patchMappings.size > bundleSize) {
-        requests.add(createBundleRequest(currentBatch.toList()))
-        currentBatch.clear()
-      }
-
-      currentBatch.addAll(scc.patchMappings)
     }
 
-    // Flush remaining
-    if (currentBatch.isNotEmpty()) {
-      requests.add(createBundleRequest(currentBatch.toList()))
-    }
+    if (bundle.isNotEmpty()) mappingsPerBundle.add(bundle)
 
-    return requests
+    return mappingsPerBundle.map { patchList -> generateBundleRequest(patchList) }
   }
 
-  private fun createBundleRequest(patchMappings: List<PatchMapping>): BundleUploadRequest {
-    val entries = patchMappings.map { createBundleEntry(it.generatedPatch) }
+  private fun generateBundleRequest(patches: List<PatchMapping>): BundleUploadRequest {
+    val entries =
+      patches.map { getBundleEntryForPatch(it.generatedPatch, useETagForUpload) }
 
     val bundle =
       JsonObject(
@@ -89,82 +85,129 @@ internal class TransactionBundleGenerator(
     return BundleUploadRequest(
       headers = mapOf("Content-Type" to "application/fhir+json"),
       payload = Json.encodeToString(bundle),
-      mappings = patchMappings,
+      mappings = patches,
     )
   }
 
-  private fun createBundleEntry(patch: Patch): JsonObject {
-    val request = createEntryRequest(patch)
-    val entryMap = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
+  companion object Factory {
 
-    entryMap["fullUrl"] = JsonPrimitive("${patch.resourceType}/${patch.resourceId}")
-    entryMap["request"] = request
+    fun getDefault(useETagForUpload: Boolean = true, bundleSize: Int = 500) =
+      getGenerator(HttpVerb.PUT, HttpVerb.PATCH, bundleSize, useETagForUpload)
 
-    when (patch.type) {
-      Patch.Type.INSERT -> {
-        val resource = json.parseToJsonElement(patch.payload).jsonObject
+    /**
+     * Returns a [TransactionBundleGenerator] based on the provided [HttpVerb]s for creating and
+     * updating resources. The function may throw an [IllegalArgumentException] if the provided
+     * [HttpVerb]s are not supported.
+     */
+    fun getGenerator(
+      httpVerbToUseForCreate: HttpVerb,
+      httpVerbToUseForUpdate: HttpVerb,
+      generatedBundleSize: Int = 500,
+      useETagForUpload: Boolean = true,
+    ): TransactionBundleGenerator {
+      val createMapping =
+        mapOf(
+          HttpVerb.PUT to ::putForCreateEntry,
+          HttpVerb.POST to ::postForCreateEntry,
+        )
+
+      val updateMapping =
+        mapOf(
+          HttpVerb.PATCH to ::patchForUpdateEntry,
+        )
+
+      val createFunction =
+        createMapping[httpVerbToUseForCreate]
+          ?: throw IllegalArgumentException(
+            "Creation using $httpVerbToUseForCreate is not supported.",
+          )
+
+      val updateFunction =
+        updateMapping[httpVerbToUseForUpdate]
+          ?: throw IllegalArgumentException(
+            "Update using $httpVerbToUseForUpdate is not supported.",
+          )
+
+      return TransactionBundleGenerator(generatedBundleSize, useETagForUpload) {
+          patch,
+          useETag,
+        ->
+        when (patch.type) {
+          Patch.Type.INSERT -> createFunction(patch, useETag)
+          Patch.Type.UPDATE -> updateFunction(patch, useETag)
+          Patch.Type.DELETE -> deleteEntry(patch, useETag)
+        }
+      }
+    }
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private fun putForCreateEntry(patch: Patch, useETagForUpload: Boolean): JsonObject {
+      val resource = json.parseToJsonElement(patch.payload).jsonObject
+      val request = buildEntryRequest("PUT", "${patch.resourceType}/${patch.resourceId}", patch, useETagForUpload)
+      return buildEntry("${patch.resourceType}/${patch.resourceId}", request, resource)
+    }
+
+    private fun postForCreateEntry(patch: Patch, useETagForUpload: Boolean): JsonObject {
+      val resource = json.parseToJsonElement(patch.payload).jsonObject
+      val request = buildEntryRequest("POST", patch.resourceType, patch, useETagForUpload)
+      return buildEntry("${patch.resourceType}/${patch.resourceId}", request, resource)
+    }
+
+    private fun patchForUpdateEntry(patch: Patch, useETagForUpload: Boolean): JsonObject {
+      val binary =
+        JsonObject(
+          mapOf(
+            "resourceType" to JsonPrimitive("Binary"),
+            "contentType" to JsonPrimitive(ContentTypes.APPLICATION_JSON_PATCH),
+            "data" to
+              JsonPrimitive(
+                kotlin.io.encoding.Base64.encode(patch.payload.encodeToByteArray()),
+              ),
+          ),
+        )
+      val request = buildEntryRequest("PATCH", "${patch.resourceType}/${patch.resourceId}", patch, useETagForUpload)
+      return buildEntry("${patch.resourceType}/${patch.resourceId}", request, binary)
+    }
+
+    private fun deleteEntry(patch: Patch, useETagForUpload: Boolean): JsonObject {
+      val request = buildEntryRequest("DELETE", "${patch.resourceType}/${patch.resourceId}", patch, useETagForUpload)
+      return buildEntry("${patch.resourceType}/${patch.resourceId}", request, resource = null)
+    }
+
+    private fun buildEntryRequest(
+      method: String,
+      url: String,
+      patch: Patch,
+      useETagForUpload: Boolean,
+    ): JsonObject {
+      val requestMap = mutableMapOf<String, JsonElement>()
+      requestMap["method"] = JsonPrimitive(method)
+      requestMap["url"] = JsonPrimitive(url)
+
+      if (useETagForUpload && !patch.versionId.isNullOrEmpty()) {
+        when (patch.type) {
+          Patch.Type.UPDATE,
+          Patch.Type.DELETE, -> requestMap["ifMatch"] = JsonPrimitive("W/\"${patch.versionId}\"")
+          Patch.Type.INSERT -> {}
+        }
+      }
+
+      return JsonObject(requestMap)
+    }
+
+    private fun buildEntry(
+      fullUrl: String,
+      request: JsonObject,
+      resource: JsonObject?,
+    ): JsonObject {
+      val entryMap = mutableMapOf<String, JsonElement>()
+      entryMap["fullUrl"] = JsonPrimitive(fullUrl)
+      entryMap["request"] = request
+      if (resource != null) {
         entryMap["resource"] = resource
       }
-      Patch.Type.UPDATE -> {
-        if (httpVerbForUpdate == HttpVerb.PATCH) {
-          // Wrap JSON patch in a Binary resource
-          val binary =
-            JsonObject(
-              mapOf(
-                "resourceType" to JsonPrimitive("Binary"),
-                "contentType" to JsonPrimitive("application/json-patch+json"),
-                "data" to
-                  JsonPrimitive(
-                    kotlin.io.encoding.Base64.encode(patch.payload.encodeToByteArray()),
-                  ),
-              ),
-            )
-          entryMap["resource"] = binary
-        } else {
-          // PUT — payload is the full resource
-          val resource = json.parseToJsonElement(patch.payload).jsonObject
-          entryMap["resource"] = resource
-        }
-      }
-      Patch.Type.DELETE -> {
-        // No resource for delete
-      }
+      return JsonObject(entryMap)
     }
-
-    return JsonObject(entryMap)
-  }
-
-  private fun createEntryRequest(patch: Patch): JsonObject {
-    val requestMap = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
-
-    when (patch.type) {
-      Patch.Type.INSERT -> {
-        val verb = if (httpVerbForCreate == HttpVerb.PUT) "PUT" else "POST"
-        requestMap["method"] = JsonPrimitive(verb)
-        requestMap["url"] =
-          if (httpVerbForCreate == HttpVerb.PUT) {
-            JsonPrimitive("${patch.resourceType}/${patch.resourceId}")
-          } else {
-            JsonPrimitive(patch.resourceType)
-          }
-      }
-      Patch.Type.UPDATE -> {
-        requestMap["method"] =
-          JsonPrimitive(if (httpVerbForUpdate == HttpVerb.PATCH) "PATCH" else "PUT")
-        requestMap["url"] = JsonPrimitive("${patch.resourceType}/${patch.resourceId}")
-        patch.versionId?.let {
-          requestMap["ifMatch"] = JsonPrimitive("W/\"$it\"")
-        }
-      }
-      Patch.Type.DELETE -> {
-        requestMap["method"] = JsonPrimitive("DELETE")
-        requestMap["url"] = JsonPrimitive("${patch.resourceType}/${patch.resourceId}")
-        patch.versionId?.let {
-          requestMap["ifMatch"] = JsonPrimitive("W/\"$it\"")
-        }
-      }
-    }
-
-    return JsonObject(requestMap)
   }
 }
