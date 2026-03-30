@@ -39,6 +39,17 @@ kotlin {
         implementation(libs.kotlin.fhir)
         implementation(libs.fhir.path)
         implementation(libs.kermit)
+        implementation(libs.androidx.datastore.preferences)
+        implementation(libs.ktor.client.core)
+        implementation(libs.ktor.client.content.negotiation)
+        implementation(libs.ktor.client.logging)
+        implementation(libs.ktor.serialization.kotlinx.json)
+      }
+    }
+    val androidMain by getting {
+      dependencies {
+        implementation(libs.androidx.work.runtime)
+        implementation(libs.androidx.lifecycle.livedata)
       }
     }
   }

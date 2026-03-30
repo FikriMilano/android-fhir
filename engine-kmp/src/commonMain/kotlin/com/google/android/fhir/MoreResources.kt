@@ -19,6 +19,7 @@ package com.google.android.fhir
 import com.google.fhir.model.r4.Resource
 import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlin.reflect.KClass
+import kotlinx.datetime.Instant
 
 /**
  * Resource type registry mapping KClass to ResourceType. This replaces JVM reflection
@@ -75,3 +76,9 @@ fun getResourceClass(resourceType: ResourceType): KClass<out Resource> =
  */
 internal val Resource.resourceType: String
   get() = this::class.simpleName ?: error("Cannot determine resource type for $this")
+
+internal val Resource.versionId: String?
+  get() = meta?.versionId?.value
+
+internal val Resource.lastUpdated: Instant?
+  get() = meta?.lastUpdated?.value?.toString()?.let { Instant.parse(it) }
