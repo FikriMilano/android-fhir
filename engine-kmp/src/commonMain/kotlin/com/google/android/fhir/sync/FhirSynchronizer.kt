@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@ package com.google.android.fhir.sync
 import com.google.android.fhir.FhirEngine
 import com.google.android.fhir.sync.download.DownloadState
 import com.google.android.fhir.sync.download.Downloader
-import com.google.android.fhir.sync.upload.ResourceSyncException
 import com.google.android.fhir.sync.upload.UploadStrategy
 import com.google.android.fhir.sync.upload.Uploader
+import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -29,6 +29,13 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
+
+@Serializable
+enum class SyncOperation {
+  DOWNLOAD,
+  UPLOAD,
+}
 
 private sealed class SyncResult {
   val timestamp: Instant = Clock.System.now()
@@ -37,6 +44,13 @@ private sealed class SyncResult {
 
   data class Error(val exceptions: List<ResourceSyncException>) : SyncResult()
 }
+
+@Serializable
+data class ResourceSyncException(
+  val resourceType: ResourceType,
+  val exceptionMessage: String? = null,
+  val exceptionStacktrace: String? = null,
+)
 
 internal data class UploadConfiguration(
   val uploader: Uploader,
@@ -53,6 +67,7 @@ internal class FhirSynchronizer(
   private val fhirEngine: FhirEngine,
   private val uploadConfiguration: UploadConfiguration,
   private val downloadConfiguration: DownloadConfiguration,
+  private val datastoreUtil: FhirDataStore,
 ) {
 
   private val _syncState = MutableSharedFlow<SyncJobStatus>()
@@ -61,6 +76,9 @@ internal class FhirSynchronizer(
   private suspend fun setSyncState(state: SyncJobStatus) = _syncState.emit(state)
 
   private suspend fun setSyncState(result: SyncResult): SyncJobStatus {
+    // todo: emit this properly instead of using datastore?
+    datastoreUtil.writeLastSyncTimestamp(result.timestamp)
+
     val state =
       when (result) {
         is SyncResult.Success -> SyncJobStatus.Succeeded()
@@ -99,21 +117,13 @@ internal class FhirSynchronizer(
       flow {
         downloadConfiguration.downloader.download().collect {
           when (it) {
-            is DownloadState.Started -> {
+            is DownloadState.Started ->
               setSyncState(SyncJobStatus.InProgress(SyncOperation.DOWNLOAD, it.total))
-            }
             is DownloadState.Success -> {
               setSyncState(SyncJobStatus.InProgress(SyncOperation.DOWNLOAD, it.total, it.completed))
               emit(it.resources)
             }
-            is DownloadState.Failure -> {
-              exceptions.add(
-                ResourceSyncException(
-                  resourceType = it.syncError.resourceType,
-                  exception = it.syncError.exception,
-                ),
-              )
-            }
+            is DownloadState.Failure -> exceptions.add(it.syncError)
           }
         }
       }

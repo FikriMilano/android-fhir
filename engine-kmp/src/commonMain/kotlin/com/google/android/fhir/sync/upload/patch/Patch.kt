@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,21 +17,23 @@
 package com.google.android.fhir.sync.upload.patch
 
 import com.google.android.fhir.LocalChange
+import com.google.fhir.model.r4.Resource
+import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlin.time.Instant
 
-/** Data class for squashed local changes for resource. */
+/** Data class for squashed local changes for resource */
 internal data class Patch(
-  /** The resource type name (e.g. "Patient"). */
+  /** The [ResourceType] */
   val resourceType: String,
-  /** The resource id. */
+  /** The resource id [Resource.id] */
   val resourceId: String,
-  /** This is the id of the version of the resource that this local change is based on. */
+  /** This is the id of the version of the resource that this local change is based of */
   val versionId: String? = null,
   /** The time instant the app user performed a CUD operation on the resource. */
   val timestamp: Instant,
-  /** Type of local change like insert, delete, etc. */
+  /** Type of local change like insert, delete, etc */
   val type: Type,
-  /** JSON string with local changes. */
+  /** json string with local changes */
   val payload: String,
 ) {
   enum class Type(val value: Int) {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,26 +16,71 @@
 
 package com.google.android.fhir.sync.download
 
-import com.google.fhir.model.r4.Resource
+import com.google.fhir.model.r4.Bundle
 
-/** Represents a request to download FHIR resources from a server. */
+/**
+ * Structure represents a request that can be made to download resources from the FHIR server. The
+ * request may contain http headers for conditional requests for getting precise results.
+ *
+ * Implementations of [DownloadRequest] are [UrlDownloadRequest] and [BundleDownloadRequest] and the
+ * application developers may choose the appropriate [DownloadRequest.of] companion functions to
+ * create request objects.
+ *
+ * **UrlRequest**
+ *
+ * The application developer may use a request like below to get an update on Patient/123 since it
+ * was last downloaded.
+ *
+ * ```
+ *  Request.of("/Patient/123", mapOf("If-Modified-Since" to "knownLastUpdatedOfPatient123"))
+ * ```
+ *
+ * **BundleRequest**
+ *
+ * The application developer may use a request like below to download multiple resources in a single
+ * shot.
+ *
+ * ```
+ * Request.of(Bundle().apply {
+ *  addEntry(Bundle.BundleEntryComponent().apply {
+ *    request = Bundle.BundleEntryRequestComponent().apply {
+ *       url = "Patient/123"
+ *       method = Bundle.HTTPVerb.GET
+ *    }
+ *  })
+ *  addEntry(Bundle.BundleEntryComponent().apply {
+ *    request = Bundle.BundleEntryRequestComponent().apply {
+ *       url = "Patient/124"
+ *       method = Bundle.HTTPVerb.GET
+ *    }
+ *  })
+ * })
+ * ```
+ */
 sealed class DownloadRequest(open val headers: Map<String, String>) {
-
-  /** A download request specified by a URL path. */
-  data class UrlDownloadRequest(
-    val url: String,
-    override val headers: Map<String, String> = emptyMap(),
-  ) : DownloadRequest(headers)
-
-  /** A download request specified by a FHIR resource (e.g. a Bundle for batch requests). */
-  data class BundleDownloadRequest(
-    val bundle: Resource,
-    override val headers: Map<String, String> = emptyMap(),
-  ) : DownloadRequest(headers)
-
   companion object {
-    /** Creates a [UrlDownloadRequest] from a URL string. */
-    fun of(url: String, headers: Map<String, String> = emptyMap()): DownloadRequest =
+    /** @return [UrlDownloadRequest] for a FHIR search [url]. */
+    fun of(url: String, headers: Map<String, String> = emptyMap()) =
       UrlDownloadRequest(url, headers)
+
+    /** @return [BundleDownloadRequest] for a FHIR search [bundle]. */
+    fun of(bundle: Bundle, headers: Map<String, String> = emptyMap()) =
+      BundleDownloadRequest(bundle, headers)
   }
 }
+
+/**
+ * A [url] based FHIR request to download resources from the server. e.g.
+ * `Patient?given=valueGiven&family=valueFamily`
+ */
+data class UrlDownloadRequest
+internal constructor(val url: String, override val headers: Map<String, String> = emptyMap()) :
+  DownloadRequest(headers)
+
+/**
+ * A [bundle] based FHIR request to download resources from the server. For an example, see
+ * [bundle-request-medsallergies.json](https://www.hl7.org/fhir/bundle-request-medsallergies.json.html)
+ */
+data class BundleDownloadRequest
+internal constructor(val bundle: Bundle, override val headers: Map<String, String> = emptyMap()) :
+  DownloadRequest(headers)

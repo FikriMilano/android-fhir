@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,16 +20,22 @@ import com.google.android.fhir.ContentTypes
 import com.google.android.fhir.sync.upload.patch.Patch
 import com.google.android.fhir.sync.upload.patch.PatchMapping
 import com.google.android.fhir.sync.upload.patch.StronglyConnectedPatchMappings
+import com.google.fhir.model.r4.Base64Binary
+import com.google.fhir.model.r4.Binary
+import com.google.fhir.model.r4.Bundle
+import com.google.fhir.model.r4.Code
+import com.google.fhir.model.r4.FhirR4Json
+import kotlin.io.encoding.Base64
 
 /** Generates list of [UrlUploadRequest]s for a list of [Patch]es. */
 internal class UrlRequestGenerator(
-  private val getUrlRequestForPatch: (patch: Patch, mapping: PatchMapping) -> UrlUploadRequest,
+  private val getUrlRequestForPatch: (patch: Patch) -> UrlUploadRequest,
 ) : UploadRequestGenerator {
 
   /**
    * Since a [UrlUploadRequest] can only handle a single resource request, the
    * [StronglyConnectedPatchMappings.patchMappings] are flattened and handled as acyclic mapping to
-   * generate [UrlUploadRequest] for each [PatchMapping].
+   * generate [UrlUploadRequestMapping] for each [PatchMapping].
    *
    * **NOTE**
    *
@@ -40,35 +46,41 @@ internal class UrlRequestGenerator(
    */
   override fun generateUploadRequests(
     mappedPatches: List<StronglyConnectedPatchMappings>,
-  ): List<UploadRequest> =
+  ): List<UrlUploadRequestMapping> =
     mappedPatches
-      .map { it.patchMappings }
-      .flatten()
-      .map { getUrlRequestForPatch(it.generatedPatch, it) }
+      .flatMap { it.patchMappings }
+      .map {
+        UrlUploadRequestMapping(
+          localChanges = it.localChanges,
+          generatedRequest = getUrlRequestForPatch(it.generatedPatch),
+        )
+      }
 
   companion object Factory {
 
+    private val fhirR4Json = FhirR4Json()
+
     private val createMapping =
       mapOf(
-        HttpVerb.POST to this::postForCreateResource,
-        HttpVerb.PUT to this::putForCreateResource,
+        Bundle.HTTPVerb.Post to this::postForCreateResource,
+        Bundle.HTTPVerb.Put to this::putForCreateResource,
       )
 
     private val updateMapping =
       mapOf(
-        HttpVerb.PATCH to this::patchForUpdateResource,
+        Bundle.HTTPVerb.Patch to this::patchForUpdateResource,
       )
 
-    fun getDefault() = getGenerator(HttpVerb.PUT, HttpVerb.PATCH)
+    fun getDefault() = getGenerator(Bundle.HTTPVerb.Put, Bundle.HTTPVerb.Patch)
 
     /**
-     * Returns a [UrlRequestGenerator] based on the provided [HttpVerb]s for creating and updating
-     * resources. The function may throw an [IllegalArgumentException] if the provided [HttpVerb]s
-     * are not supported.
+     * Returns a [UrlRequestGenerator] based on the provided [Bundle.HTTPVerb]s for creating and
+     * updating resources. The function may throw an [IllegalArgumentException] if the provided
+     * [Bundle.HTTPVerb]s are not supported.
      */
     fun getGenerator(
-      httpVerbToUseForCreate: HttpVerb,
-      httpVerbToUseForUpdate: HttpVerb,
+      httpVerbToUseForCreate: Bundle.HTTPVerb,
+      httpVerbToUseForUpdate: Bundle.HTTPVerb,
     ): UrlRequestGenerator {
       val createFunction =
         createMapping[httpVerbToUseForCreate]
@@ -82,64 +94,46 @@ internal class UrlRequestGenerator(
             "Update using $httpVerbToUseForUpdate is not supported.",
           )
 
-      return UrlRequestGenerator { patch, mapping ->
+      return UrlRequestGenerator { patch ->
         when (patch.type) {
-          Patch.Type.INSERT -> createFunction(patch, mapping)
-          Patch.Type.UPDATE -> updateFunction(patch, mapping)
-          Patch.Type.DELETE -> deleteFunction(patch, mapping)
+          Patch.Type.INSERT -> createFunction(patch)
+          Patch.Type.UPDATE -> updateFunction(patch)
+          Patch.Type.DELETE -> deleteFunction(patch)
         }
       }
     }
 
-    private fun deleteFunction(patch: Patch, mapping: PatchMapping) =
+    private fun deleteFunction(patch: Patch) =
       UrlUploadRequest(
-        httpVerb = HttpVerb.DELETE,
+        httpVerb = Bundle.HTTPVerb.Delete,
         url = "${patch.resourceType}/${patch.resourceId}",
-        payload = "",
-        headers = buildETagHeaders(patch),
-        mapping = mapping,
+        resource = fhirR4Json.decodeFromString(patch.payload),
       )
 
-    private fun postForCreateResource(patch: Patch, mapping: PatchMapping) =
+    private fun postForCreateResource(patch: Patch) =
       UrlUploadRequest(
-        httpVerb = HttpVerb.POST,
+        httpVerb = Bundle.HTTPVerb.Post,
         url = patch.resourceType,
-        payload = patch.payload,
-        headers = emptyMap(),
-        mapping = mapping,
+        resource = fhirR4Json.decodeFromString(patch.payload),
       )
 
-    private fun putForCreateResource(patch: Patch, mapping: PatchMapping) =
+    private fun putForCreateResource(patch: Patch) =
       UrlUploadRequest(
-        httpVerb = HttpVerb.PUT,
+        httpVerb = Bundle.HTTPVerb.Put,
         url = "${patch.resourceType}/${patch.resourceId}",
-        payload = patch.payload,
-        headers = emptyMap(),
-        mapping = mapping,
+        resource = fhirR4Json.decodeFromString(patch.payload),
       )
 
-    private fun patchForUpdateResource(patch: Patch, mapping: PatchMapping) =
+    private fun patchForUpdateResource(patch: Patch) =
       UrlUploadRequest(
-        httpVerb = HttpVerb.PATCH,
+        httpVerb = Bundle.HTTPVerb.Patch,
         url = "${patch.resourceType}/${patch.resourceId}",
-        payload = patch.payload,
-        headers =
-          buildMap {
-            put("Content-Type", ContentTypes.APPLICATION_JSON_PATCH)
-            putAll(buildETagHeaders(patch))
-          },
-        mapping = mapping,
+        resource =
+          Binary(
+            contentType = Code(value = ContentTypes.APPLICATION_JSON_PATCH),
+            data = Base64Binary(value = Base64.encode(patch.payload.encodeToByteArray())),
+          ),
+        headers = mapOf("Content-Type" to ContentTypes.APPLICATION_JSON_PATCH),
       )
-
-    private fun buildETagHeaders(patch: Patch): Map<String, String> =
-      buildMap {
-        if (!patch.versionId.isNullOrEmpty()) {
-          when (patch.type) {
-            Patch.Type.UPDATE,
-            Patch.Type.DELETE, -> put("If-Match", "W/\"${patch.versionId}\"")
-            Patch.Type.INSERT -> {}
-          }
-        }
-      }
   }
 }

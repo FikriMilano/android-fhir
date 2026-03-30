@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2022-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,26 +18,27 @@ package com.google.android.fhir.sync
 
 import com.google.fhir.model.r4.Resource
 
-// TODO: Phase 6 — Full conflict resolver implementation
-
-/** Resolves conflicts between local and remote FHIR resources during synchronization. */
+/** Resolves conflicts between the client and remote changes in a Resource. */
 fun interface ConflictResolver {
+  /**
+   * @param local The modified resource on the client.
+   * @param remote The latest version of the resource downloaded from the remote server.
+   */
   fun resolve(local: Resource, remote: Resource): ConflictResolutionResult
 }
 
-/** The result of resolving a conflict between local and remote resources. */
-sealed class ConflictResolutionResult {
-  object AcceptLocal : ConflictResolutionResult()
+/**
+ * Contains the result of the conflict resolution. For now, [Resolved] is the only acceptable result
+ * and the expectation is that the client will resolve each and every conflict in-flight that may
+ * arise during the sync process. There is no way for the client application to abort or defer the
+ * conflict resolution to a later time.
+ */
+sealed class ConflictResolutionResult
 
-  object AcceptRemote : ConflictResolutionResult()
-}
+data class Resolved(val resolved: Resource) : ConflictResolutionResult()
 
-/** A [ConflictResolver] that always accepts the local version of the resource. */
-object AcceptLocalConflictResolver : ConflictResolver {
-  override fun resolve(local: Resource, remote: Resource) = ConflictResolutionResult.AcceptLocal
-}
+/** Accepts the local change and rejects the remote change. */
+val AcceptLocalConflictResolver = ConflictResolver { local, _ -> Resolved(local) }
 
-/** A [ConflictResolver] that always accepts the remote version of the resource. */
-object AcceptRemoteConflictResolver : ConflictResolver {
-  override fun resolve(local: Resource, remote: Resource) = ConflictResolutionResult.AcceptRemote
-}
+/** Accepts the remote change and rejects the local change. */
+val AcceptRemoteConflictResolver = ConflictResolver { _, remote -> Resolved(remote) }

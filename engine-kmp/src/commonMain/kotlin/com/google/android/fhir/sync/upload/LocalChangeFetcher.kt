@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@ package com.google.android.fhir.sync.upload
 
 import com.google.android.fhir.LocalChange
 import com.google.android.fhir.db.Database
+import com.google.android.fhir.sync.ResourceSyncException
+import kotlin.properties.Delegates
 
 /**
  * Fetches local changes.
@@ -45,17 +47,20 @@ internal interface LocalChangeFetcher {
   suspend fun getProgress(): SyncUploadProgress
 }
 
+data class SyncUploadProgress(
+  val remaining: Int,
+  val initialTotal: Int,
+  val uploadError: ResourceSyncException? = null,
+)
+
 internal class AllChangesLocalChangeFetcher(
   private val database: Database,
 ) : LocalChangeFetcher {
 
-  private var _total: Int = 0
-
-  override val total: Int
-    get() = _total
+  override var total by Delegates.notNull<Int>()
 
   suspend fun initTotalCount() {
-    _total = database.getLocalChangesCount()
+    total = database.getLocalChangesCount()
   }
 
   override suspend fun hasNext(): Boolean = database.getLocalChangesCount().isNotZero()
@@ -63,20 +68,17 @@ internal class AllChangesLocalChangeFetcher(
   override suspend fun next(): List<LocalChange> = database.getAllLocalChanges()
 
   override suspend fun getProgress(): SyncUploadProgress =
-    SyncUploadProgress(database.getLocalChangesCount(), _total)
+    SyncUploadProgress(database.getLocalChangesCount(), total)
 }
 
 internal class PerResourceLocalChangeFetcher(
   private val database: Database,
 ) : LocalChangeFetcher {
 
-  private var _total: Int = 0
-
-  override val total: Int
-    get() = _total
+  override var total by Delegates.notNull<Int>()
 
   suspend fun initTotalCount() {
-    _total = database.getLocalChangesCount()
+    total = database.getLocalChangesCount()
   }
 
   override suspend fun hasNext(): Boolean = database.getLocalChangesCount().isNotZero()
@@ -85,16 +87,16 @@ internal class PerResourceLocalChangeFetcher(
     database.getAllChangesForEarliestChangedResource()
 
   override suspend fun getProgress(): SyncUploadProgress =
-    SyncUploadProgress(database.getLocalChangesCount(), _total)
+    SyncUploadProgress(database.getLocalChangesCount(), total)
 }
 
 /** Represents the mode in which local changes should be fetched. */
 sealed class LocalChangesFetchMode {
-  data object AllChanges : LocalChangesFetchMode()
+  object AllChanges : LocalChangesFetchMode()
 
-  data object PerResource : LocalChangesFetchMode()
+  object PerResource : LocalChangesFetchMode()
 
-  data object EarliestChange : LocalChangesFetchMode()
+  object EarliestChange : LocalChangesFetchMode()
 }
 
 internal object LocalChangeFetcherFactory {

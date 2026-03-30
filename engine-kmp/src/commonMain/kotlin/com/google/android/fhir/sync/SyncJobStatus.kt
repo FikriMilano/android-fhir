@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2022-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,42 +16,19 @@
 
 package com.google.android.fhir.sync
 
-import com.google.android.fhir.sync.upload.ResourceSyncException
 import kotlin.time.Clock
 import kotlin.time.Instant
-
-/** Enum representing the type of synchronization operation. */
-enum class SyncOperation {
-  DOWNLOAD,
-  UPLOAD,
-}
-
-/** Sealed class representing different states of a synchronization operation. */
-sealed class SyncJobStatus {
-  val timestamp: Instant = Clock.System.now()
-
-  /** Sync job has been started on the client but the syncing is not necessarily in progress. */
-  class Started : SyncJobStatus()
-
-  /** Syncing in progress with the server. */
-  data class InProgress(
-    val syncOperation: SyncOperation,
-    val total: Int = 0,
-    val completed: Int = 0,
-  ) : SyncJobStatus()
-
-  /** Sync job finished successfully. */
-  class Succeeded : SyncJobStatus()
-
-  /** Sync job failed. */
-  data class Failed(val exceptions: List<ResourceSyncException>) : SyncJobStatus()
-}
+import kotlinx.serialization.Serializable
 
 /**
- * Data class representing the state of a periodic synchronization operation.
+ * Data class representing the state of a periodic synchronization operation. It is a combined state
+ * of [WorkInfo.State] and [SyncJobStatus]. See [CurrentSyncJobStatus] and [LastSyncJobStatus] for
+ * more details.
  *
- * @property lastSyncJobStatus The result of the last synchronization job.
- * @property currentSyncJobStatus The current state of the synchronization job.
+ * @property lastSyncJobStatus The result of the last synchronization job [LastSyncJobStatus]. It
+ *   only represents terminal states.
+ * @property currentSyncJobStatus The current state of the synchronization job
+ *   [CurrentSyncJobStatus].
  */
 data class PeriodicSyncJobStatus(
   val lastSyncJobStatus: LastSyncJobStatus?,
@@ -60,7 +37,7 @@ data class PeriodicSyncJobStatus(
 
 /**
  * Sealed class representing the result of a synchronization operation. These are terminal states of
- * the sync operation.
+ * the sync operation, representing [Succeeded] and [Failed].
  *
  * @property timestamp The timestamp when the synchronization result occurred.
  */
@@ -72,10 +49,19 @@ sealed class LastSyncJobStatus(val timestamp: Instant) {
   class Failed(timestamp: Instant) : LastSyncJobStatus(timestamp)
 }
 
-/** Sealed class representing the current state of a synchronization job. */
+/**
+ * Sealed class representing different states of a synchronization operation. In Android for
+ * example, it combines WorkInfo.State and [SyncJobStatus]. Enqueued state represents
+ * WorkInfo.State.ENQUEUED where [SyncJobStatus] is not applicable. Running state is a combined
+ * state of WorkInfo.State.ENQUEUED and [SyncJobStatus.Started] or [SyncJobStatus.InProgress].
+ * Succeeded state is a combined state of WorkInfo.State.SUCCEEDED and [SyncJobStatus.Started] or
+ * [SyncJobStatus.Succeeded]. Failed state is a combined state of WorkInfo.State.FAILED and
+ * [SyncJobStatus.Failed]. Cancelled state represents WorkInfo.State.CANCELLED where [SyncJobStatus]
+ * is not applicable.
+ */
 sealed class CurrentSyncJobStatus {
   /** State indicating that the synchronization operation is enqueued. */
-  data object Enqueued : CurrentSyncJobStatus()
+  object Enqueued : CurrentSyncJobStatus()
 
   /**
    * State indicating that the synchronization operation is running.
@@ -99,8 +85,41 @@ sealed class CurrentSyncJobStatus {
   class Failed(val timestamp: Instant) : CurrentSyncJobStatus()
 
   /** State indicating that the synchronization operation is canceled. */
-  data object Cancelled : CurrentSyncJobStatus()
+  object Cancelled : CurrentSyncJobStatus()
 
   /** State indicating that the synchronization operation is blocked. */
   data object Blocked : CurrentSyncJobStatus()
+}
+
+/**
+ * Sealed class representing different states of a synchronization operation. In Android, these
+ * states do not represent WorkInfo.State, whereas [CurrentSyncJobStatus] combines WorkInfo.State]
+ * and [SyncJobStatus] in one-time and periodic sync. For more details, see [CurrentSyncJobStatus]
+ * and [PeriodicSyncJobStatus].
+ */
+@Serializable
+sealed class SyncJobStatus {
+  val timestamp: Instant = Clock.System.now()
+
+  /** Sync job has been started on the client but the syncing is not necessarily in progress. */
+  @Serializable @kotlinx.serialization.SerialName("Started") class Started : SyncJobStatus()
+
+  /** Syncing in progress with the server. */
+  @Serializable
+  @kotlinx.serialization.SerialName("InProgress")
+  data class InProgress(
+    val syncOperation: SyncOperation,
+    val total: Int = 0,
+    val completed: Int = 0,
+  ) : SyncJobStatus()
+
+  /** Sync job finished successfully. */
+  @Serializable @kotlinx.serialization.SerialName("Succeeded") class Succeeded : SyncJobStatus()
+
+  /** Sync job failed. */
+  @Serializable
+  @kotlinx.serialization.SerialName("Failed")
+  data class Failed(
+    @kotlinx.serialization.Transient val exceptions: List<ResourceSyncException> = emptyList(),
+  ) : SyncJobStatus()
 }

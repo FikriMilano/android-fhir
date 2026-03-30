@@ -14,19 +14,22 @@
  * limitations under the License.
  */
 
-package com.google.android.fhir.sync.upload
+package com.google.android.fhir.sync
 
-// TODO: Phase 6 — Full sync upload implementation
+import kotlinx.coroutines.flow.Flow
 
-/** Tracks the progress of a sync upload operation. */
-data class SyncUploadProgress(
-  val remaining: Int,
-  val initialTotal: Int,
-  val uploadError: ResourceSyncException? = null,
-)
+interface SyncScheduler {
+  suspend fun runOneTimeSync(
+    retryConfiguration: RetryConfiguration?,
+  ): Flow<CurrentSyncJobStatus>
 
-/** Exception wrapping a resource sync failure. */
-data class ResourceSyncException(
-  val resourceType: String,
-  val exception: Exception,
-)
+  suspend fun schedulePeriodicSync(
+    config: PeriodicSyncConfiguration,
+  ): Flow<PeriodicSyncJobStatus>
+
+  suspend fun cancelOneTimeSync()
+
+  suspend fun cancelPeriodicSync()
+}
+
+expect fun getSyncScheduler(): SyncScheduler

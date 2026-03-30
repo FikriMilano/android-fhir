@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import com.google.android.fhir.sync.upload.patch.PatchOrdering.sccOrderByReferen
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -36,8 +37,6 @@ import kotlinx.serialization.json.jsonPrimitive
  * client can be recorded as a single change on the server.
  */
 internal object PerResourcePatchGenerator : PatchGenerator {
-
-  private val json = Json { ignoreUnknownKeys = true }
 
   override suspend fun generate(
     localChanges: List<LocalChange>,
@@ -60,6 +59,7 @@ internal object PerResourcePatchGenerator : PatchGenerator {
       }
 
   private fun mergeLocalChangesForSingleResource(localChanges: List<LocalChange>): Patch? {
+    // TODO (maybe this should throw exception when two entities don't have the same versionID)
     val firstDeleteLocalChange = localChanges.indexOfFirst { it.type == Type.DELETE }
     require(firstDeleteLocalChange == -1 || firstDeleteLocalChange == localChanges.size - 1) {
       "Changes after deletion of resource are not permitted"
@@ -108,210 +108,74 @@ internal object PerResourcePatchGenerator : PatchGenerator {
 
   /** Update a JSON object with a JSON patch (RFC 6902). */
   private fun applyPatch(resourceString: String, patchString: String): String {
-    var resource: JsonElement = json.parseToJsonElement(resourceString)
-    val patchArray = json.parseToJsonElement(patchString).jsonArray
-
-    for (operation in patchArray) {
-      val op = operation.jsonObject["op"]?.jsonPrimitive?.content ?: continue
-      val path = operation.jsonObject["path"]?.jsonPrimitive?.content ?: continue
-      val value = operation.jsonObject["value"]
-
-      resource =
-        when (op) {
-          "add" -> {
-            if (value != null) addValueAtPath(resource, parsePath(path), value) else resource
-          }
-          "replace" -> {
-            if (value != null) replaceValueAtPath(resource, parsePath(path), value) else resource
-          }
-          "remove" -> removeValueAtPath(resource, parsePath(path))
-          "move" -> {
-            val from = operation.jsonObject["from"]?.jsonPrimitive?.content ?: continue
-            val movedValue = getValueAtPath(resource, parsePath(from))
-            if (movedValue != null) {
-              addValueAtPath(removeValueAtPath(resource, parsePath(from)), parsePath(path), movedValue)
-            } else {
-              resource
-            }
-          }
-          "copy" -> {
-            val from = operation.jsonObject["from"]?.jsonPrimitive?.content ?: continue
-            val copiedValue = getValueAtPath(resource, parsePath(from))
-            if (copiedValue != null) addValueAtPath(resource, parsePath(path), copiedValue)
-            else resource
-          }
-          "test" -> resource // test is a no-op for application
-          else -> resource
-        }
+    val resourceJson = Json.parseToJsonElement(resourceString)
+    val patchJson = Json.parseToJsonElement(patchString).jsonArray
+    var currentElement = resourceJson
+    patchJson.forEach { patchElement ->
+      val patchObj = patchElement.jsonObject
+      currentElement = applySinglePatch(currentElement, patchObj)
     }
-
-    return Json.encodeToString(resource)
+    return currentElement.toString()
   }
 
-  /** Parses a JSON Pointer (RFC 6901) path into segments. */
-  private fun parsePath(path: String): List<String> {
-    if (path.isEmpty() || path == "/") return emptyList()
-    return path.trimStart('/').split("/").map {
-      it.replace("~1", "/").replace("~0", "~") // JSON Pointer escaping
-    }
+  private fun applySinglePatch(element: JsonElement, operation: JsonObject): JsonElement {
+    val op = operation["op"]?.jsonPrimitive?.content ?: return element
+    val path = operation["path"]?.jsonPrimitive?.content ?: return element
+    val value = operation["value"]
+    val tokens = path.split("/").filter { it.isNotEmpty() }
+    return applyModification(element, tokens, op, value)
   }
 
-  /** Gets a value at the given JSON Pointer path segments. */
-  private fun getValueAtPath(element: JsonElement, parts: List<String>): JsonElement? {
-    var current = element
-    for (part in parts) {
-      current =
-        when {
-          current is JsonObject -> current[part] ?: return null
-          current is JsonArray -> {
-            val index = part.toIntOrNull() ?: return null
-            if (index < 0 || index >= current.size) return null
-            current[index]
-          }
-          else -> return null
-        }
-    }
-    return current
-  }
-
-  /** Adds a value at the given path (RFC 6902 "add" semantics). */
-  private fun addValueAtPath(
+  private fun applyModification(
     element: JsonElement,
-    parts: List<String>,
-    value: JsonElement,
+    tokens: List<String>,
+    op: String,
+    value: JsonElement?,
   ): JsonElement {
-    if (parts.isEmpty()) return value
-    return addValueRecursive(element, parts, 0, value)
-  }
-
-  private fun addValueRecursive(
-    element: JsonElement,
-    parts: List<String>,
-    index: Int,
-    value: JsonElement,
-  ): JsonElement {
-    val key = parts[index]
-    if (index == parts.size - 1) {
-      return when {
-        element is JsonObject -> JsonObject(element.toMutableMap().apply { this[key] = value })
-        element is JsonArray && key == "-" -> JsonArray(element + value)
-        element is JsonArray -> {
-          val i = key.toInt()
-          val list = element.toMutableList()
-          list.add(i, value)
-          JsonArray(list)
-        }
+    if (tokens.isEmpty()) {
+      return when (op) {
+        "replace",
+        "add", -> value ?: JsonNull
         else -> element
       }
     }
-    return when {
-      element is JsonObject -> {
-        val child = element[key] ?: return element
-        JsonObject(
-          element.toMutableMap().apply {
-            this[key] = addValueRecursive(child, parts, index + 1, value)
-          },
-        )
-      }
-      element is JsonArray -> {
-        val i = key.toInt()
-        if (i < 0 || i >= element.size) return element
-        val list = element.toMutableList()
-        list[i] = addValueRecursive(list[i], parts, index + 1, value)
-        JsonArray(list)
-      }
-      else -> element
-    }
-  }
+    val token = tokens.first()
+    val remaining = tokens.drop(1)
 
-  /** Replaces a value at the given path (RFC 6902 "replace" semantics). */
-  private fun replaceValueAtPath(
-    element: JsonElement,
-    parts: List<String>,
-    value: JsonElement,
-  ): JsonElement {
-    if (parts.isEmpty()) return value
-    return replaceValueRecursive(element, parts, 0, value)
-  }
-
-  private fun replaceValueRecursive(
-    element: JsonElement,
-    parts: List<String>,
-    index: Int,
-    value: JsonElement,
-  ): JsonElement {
-    val key = parts[index]
-    if (index == parts.size - 1) {
-      return when {
-        element is JsonObject -> JsonObject(element.toMutableMap().apply { this[key] = value })
-        element is JsonArray -> {
-          val i = key.toInt()
-          val list = element.toMutableList()
-          list[i] = value
-          JsonArray(list)
+    return when (element) {
+      is JsonObject -> {
+        val mutableMap = element.toMutableMap()
+        if (remaining.isEmpty()) {
+          when (op) {
+            "replace",
+            "add", -> mutableMap[token] = value ?: JsonNull
+            "remove" -> mutableMap.remove(token)
+          }
+        } else {
+          val child = mutableMap[token] ?: JsonObject(emptyMap())
+          mutableMap[token] = applyModification(child, remaining, op, value)
         }
-        else -> element
+        JsonObject(mutableMap)
       }
-    }
-    return when {
-      element is JsonObject -> {
-        val child = element[key] ?: return element
-        JsonObject(
-          element.toMutableMap().apply {
-            this[key] = replaceValueRecursive(child, parts, index + 1, value)
-          },
-        )
-      }
-      element is JsonArray -> {
-        val i = key.toInt()
-        if (i < 0 || i >= element.size) return element
-        val list = element.toMutableList()
-        list[i] = replaceValueRecursive(list[i], parts, index + 1, value)
-        JsonArray(list)
-      }
-      else -> element
-    }
-  }
-
-  /** Removes a value at the given path (RFC 6902 "remove" semantics). */
-  private fun removeValueAtPath(element: JsonElement, parts: List<String>): JsonElement {
-    if (parts.isEmpty()) return JsonObject(emptyMap())
-    return removeValueRecursive(element, parts, 0)
-  }
-
-  private fun removeValueRecursive(
-    element: JsonElement,
-    parts: List<String>,
-    index: Int,
-  ): JsonElement {
-    val key = parts[index]
-    if (index == parts.size - 1) {
-      return when {
-        element is JsonObject -> JsonObject(element.toMutableMap().apply { remove(key) })
-        element is JsonArray -> {
-          val i = key.toInt()
-          val list = element.toMutableList()
-          list.removeAt(i)
-          JsonArray(list)
+      is JsonArray -> {
+        val mutList = element.toMutableList()
+        val index = if (token == "-") mutList.size else token.toIntOrNull() ?: return element
+        if (remaining.isEmpty()) {
+          when (op) {
+            "add" -> if (index <= mutList.size) mutList.add(index, value ?: JsonNull)
+            "replace" -> if (index < mutList.size) mutList[index] = value ?: JsonNull
+            "remove" -> if (index < mutList.size) mutList.removeAt(index)
+          }
+        } else {
+          val child = mutList.getOrNull(index) ?: JsonObject(emptyMap())
+          val newChild = applyModification(child, remaining, op, value)
+          if (index < mutList.size) {
+            mutList[index] = newChild
+          } else {
+            mutList.add(newChild)
+          }
         }
-        else -> element
-      }
-    }
-    return when {
-      element is JsonObject -> {
-        val child = element[key] ?: return element
-        JsonObject(
-          element.toMutableMap().apply {
-            this[key] = removeValueRecursive(child, parts, index + 1)
-          },
-        )
-      }
-      element is JsonArray -> {
-        val i = key.toInt()
-        if (i < 0 || i >= element.size) return element
-        val list = element.toMutableList()
-        list[i] = removeValueRecursive(list[i], parts, index + 1)
-        JsonArray(list)
+        JsonArray(mutList)
       }
       else -> element
     }
@@ -320,31 +184,37 @@ internal object PerResourcePatchGenerator : PatchGenerator {
   /**
    * Merges two JSON patches represented as strings.
    *
+   * This function combines operations from two JSON patch arrays into a single patch array. The
+   * merging rules are as follows:
    * - "replace" and "remove" operations from the second patch will overwrite any existing
    *   operations for the same path.
    * - "add" operations from the second patch will be added to the list of operations for that path,
    *   even if operations already exist for that path.
+   * - The function does not handle other operation types like "move", "copy", or "test".
    */
   private fun mergePatches(firstPatch: String, secondPatch: String): String {
-    val firstPatchNode = json.parseToJsonElement(firstPatch).jsonArray
-    val secondPatchNode = json.parseToJsonElement(secondPatch).jsonArray
-    val mergedOperations = linkedMapOf<String, MutableList<JsonElement>>()
+    val firstPatchArray = Json.parseToJsonElement(firstPatch).jsonArray
+    val secondPatchArray = Json.parseToJsonElement(secondPatch).jsonArray
+    val mergedOperations = hashMapOf<String, MutableList<JsonObject>>()
 
-    firstPatchNode.forEach { patchNode ->
-      val path = patchNode.jsonObject["path"]?.jsonPrimitive?.content ?: return@forEach
-      mergedOperations.getOrPut(path) { mutableListOf() }.add(patchNode)
+    firstPatchArray.forEach { patchElement ->
+      val patchObj = patchElement.jsonObject
+      val path = patchObj["path"]?.jsonPrimitive?.content ?: return@forEach
+      mergedOperations.getOrPut(path) { mutableListOf() }.add(patchObj)
     }
 
-    secondPatchNode.forEach { patchNode ->
-      val path = patchNode.jsonObject["path"]?.jsonPrimitive?.content ?: return@forEach
-      val opType = patchNode.jsonObject["op"]?.jsonPrimitive?.content
+    secondPatchArray.forEach { patchElement ->
+      val patchObj = patchElement.jsonObject
+      val path = patchObj["path"]?.jsonPrimitive?.content ?: return@forEach
+      val opType = patchObj["op"]?.jsonPrimitive?.content ?: return@forEach
       when (opType) {
         "replace",
-        "remove", -> mergedOperations[path] = mutableListOf(patchNode)
-        "add" -> mergedOperations.getOrPut(path) { mutableListOf() }.add(patchNode)
+        "remove", -> mergedOperations[path] = mutableListOf(patchObj)
+        "add" -> mergedOperations.getOrPut(path) { mutableListOf() }.add(patchObj)
       }
     }
 
-    return Json.encodeToString(JsonArray(mergedOperations.values.flatten()))
+    val mergedNodeList = mergedOperations.values.flatten()
+    return JsonArray(mergedNodeList).toString()
   }
 }

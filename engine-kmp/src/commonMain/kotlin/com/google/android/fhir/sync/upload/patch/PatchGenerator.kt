@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,14 @@ import com.google.android.fhir.db.LocalChangeResourceReference
 
 /**
  * Generates [Patch]es from [LocalChange]s and output [List<[StronglyConnectedPatchMappings]>] to
- * keep a mapping of the [LocalChange]s to their corresponding generated [Patch].
+ * keep a mapping of the [LocalChange]s to their corresponding generated [Patch]
  *
- * INTERNAL ONLY. This interface should NEVER been exposed as an external API because it works
+ * INTERNAL ONLY. This interface should NEVER have been exposed as an external API because it works
  * together with other components in the upload package to fulfill a specific upload strategy.
+ * Application-specific implementations of this interface are unlikely to catch all the edge cases
+ * and work with other components in the upload package seamlessly. Should there be a genuine need
+ * to control the [Patch]es to be uploaded to the server, more granulated control mechanisms should
+ * be opened up to applications to guarantee correctness.
  */
 internal interface PatchGenerator {
   /**
@@ -46,12 +50,12 @@ internal object PatchGeneratorFactory {
 }
 
 /**
- * Mode to decide the type of [PatchGenerator] that needs to be used to upload the [LocalChange]s.
+ * Mode to decide the type of [PatchGenerator] that needs to be used to upload the [LocalChange]s
  */
 internal sealed class PatchGeneratorMode {
-  data object PerResource : PatchGeneratorMode()
+  object PerResource : PatchGeneratorMode()
 
-  data object PerChange : PatchGeneratorMode()
+  object PerChange : PatchGeneratorMode()
 }
 
 /**

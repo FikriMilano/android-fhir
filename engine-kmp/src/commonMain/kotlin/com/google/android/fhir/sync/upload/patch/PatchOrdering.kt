@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2024-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,9 +42,23 @@ internal typealias Graph = Map<Node, List<Node>>
 /**
  * Orders the [PatchMapping]s to maintain referential integrity during upload.
  *
- * To maintain the referential integrity of the resources during the upload, resources that are
- * referenced by other resources must be uploaded first, irrespective of the order in which they were
- * added to the database.
+ * ```
+ * Encounter().apply {
+ *   id = "encounter-1"
+ *   subject = Reference("Patient/patient-1")
+ * }
+ *
+ * Observation().apply {
+ *   id = "observation-1"
+ *   subject = Reference("Patient/patient-1")
+ *   encounter = Reference("Encounter/encounter-1")
+ * }
+ * ```
+ * * The Encounter has an outgoing reference to Patient and the Observation has outgoing references
+ *   to Patient and the Encounter.
+ * * Now, to maintain the referential integrity of the resources during the upload,
+ *   `Encounter/encounter-1` must go before the `Observation/observation-1`, irrespective of the
+ *   order in which the Encounter and Observation were added to the database.
  */
 internal object PatchOrdering {
 

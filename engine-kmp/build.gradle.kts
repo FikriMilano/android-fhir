@@ -1,7 +1,6 @@
 plugins {
   id("org.jetbrains.kotlin.multiplatform")
   id("com.android.kotlin.multiplatform.library")
-  alias(libs.plugins.ksp)
 }
 
 kotlin {
@@ -40,46 +39,18 @@ kotlin {
         implementation(libs.kotlin.fhir)
         implementation(libs.fhir.path)
         implementation(libs.kermit)
-        implementation(libs.androidx.room.runtime)
-        implementation(libs.androidx.sqlite.bundled)
+        implementation(libs.androidx.datastore.preferences)
         implementation(libs.ktor.client.core)
         implementation(libs.ktor.client.content.negotiation)
+        implementation(libs.ktor.client.logging)
         implementation(libs.ktor.serialization.kotlinx.json)
       }
     }
     val androidMain by getting {
       dependencies {
-        implementation(libs.ktor.client.okhttp)
-      }
-    }
-    val desktopMain by getting {
-      dependencies {
-        implementation(libs.ktor.client.java)
-      }
-    }
-    val iosMain by creating {
-      dependsOn(commonMain.get())
-      dependencies {
-        implementation(libs.ktor.client.darwin)
-      }
-    }
-    val iosX64Main by getting { dependsOn(iosMain) }
-    val iosArm64Main by getting { dependsOn(iosMain) }
-    val iosSimulatorArm64Main by getting { dependsOn(iosMain) }
-
-    commonTest {
-      dependencies {
-        implementation(libs.kotlin.test)
-        implementation(libs.kotlinx.coroutines.test)
+        implementation(libs.androidx.work.runtime)
+        implementation(libs.androidx.lifecycle.livedata)
       }
     }
   }
-}
-
-dependencies {
-  add("kspAndroid", libs.androidx.room.compiler)
-  add("kspDesktop", libs.androidx.room.compiler)
-  add("kspIosX64", libs.androidx.room.compiler)
-  add("kspIosArm64", libs.androidx.room.compiler)
-  add("kspIosSimulatorArm64", libs.androidx.room.compiler)
 }

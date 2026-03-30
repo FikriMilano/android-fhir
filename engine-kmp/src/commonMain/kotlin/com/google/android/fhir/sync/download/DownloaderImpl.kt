@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package com.google.android.fhir.sync.download
 import co.touchlab.kermit.Logger
 import com.google.android.fhir.sync.DataSource
 import com.google.android.fhir.sync.DownloadWorkManager
-import com.google.android.fhir.sync.upload.ResourceSyncException
+import com.google.android.fhir.sync.ResourceSyncException
 import com.google.fhir.model.r4.Bundle
 import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlinx.coroutines.flow.Flow
@@ -27,16 +27,20 @@ import kotlinx.coroutines.flow.flow
 
 /**
  * Implementation of the [Downloader]. It orchestrates the pre & post processing of resources via
- * [DownloadWorkManager] and downloading of resources via [DataSource].
+ * [DownloadWorkManager] and downloading of resources via [DataSource]. [Downloader] clients should
+ * call download and listen to the various states emitted by [DownloadWorkManager] as
+ * [DownloadState].
  */
 internal class DownloaderImpl(
   private val dataSource: DataSource,
   private val downloadWorkManager: DownloadWorkManager,
 ) : Downloader {
+  private val resourceTypeList = ResourceType.entries.map { it.name }
 
   override suspend fun download(): Flow<DownloadState> = flow {
     var resourceTypeToDownload: ResourceType = ResourceType.Bundle
-    val totalResourcesToDownloadCount = getProgressSummary().values.sumOf { it ?: 0 }
+    // download count summary of all resources for progress i.e. <type, total, completed>
+    val totalResourcesToDownloadCount = getProgressSummary().values.sumOf { it?.value ?: 0 }
     emit(DownloadState.Started(resourceTypeToDownload, totalResourcesToDownloadCount))
     var downloadedResourcesCount = 0
     var request = downloadWorkManager.getNextRequest()
@@ -49,9 +53,9 @@ internal class DownloaderImpl(
             DownloadState.Success(it, totalResourcesToDownloadCount, downloadedResourcesCount)
           }
         } catch (exception: Exception) {
-          Logger.e(exception) { "Failed to download $resourceTypeToDownload" }
+          Logger.e(exception) { exception.message ?: "Error downloading resource" }
           DownloadState.Failure(
-            ResourceSyncException(resourceTypeToDownload.name, exception),
+            ResourceSyncException(resourceTypeToDownload, exception.message ?: "Unknown Exception"),
           )
         }
       emit(downloadState)
@@ -59,27 +63,26 @@ internal class DownloaderImpl(
     }
   }
 
-  private fun DownloadRequest.toResourceType(): ResourceType =
+  private fun DownloadRequest.toResourceType() =
     when (this) {
-      is DownloadRequest.UrlDownloadRequest -> {
-        val typeName = ResourceType.entries.map { it.name }.firstOrNull { url.contains(it, true) }
-        if (typeName != null) ResourceType.fromCode(typeName) else ResourceType.Bundle
-      }
-      is DownloadRequest.BundleDownloadRequest -> ResourceType.Bundle
+      is UrlDownloadRequest ->
+        ResourceType.valueOf(url.findAnyOf(resourceTypeList, ignoreCase = true)!!.second)
+      is BundleDownloadRequest -> ResourceType.Bundle
     }
 
-  private suspend fun getProgressSummary(): Map<ResourceType, Int?> =
+  private suspend fun getProgressSummary() =
     downloadWorkManager
       .getSummaryRequestUrls()
       .map { summary ->
         summary.key to
           runCatching { dataSource.download(DownloadRequest.of(summary.value)) }
-            .onFailure { Logger.e(it) { "Failed to get progress summary" } }
+            .onFailure { exception ->
+              Logger.e(exception) { exception.message ?: "Error downloading resource" }
+            }
             .getOrNull()
-            .let { it as? Bundle }
-            ?.total
-            ?.value
+            .takeIf { it is Bundle }
+            ?.let { (it as Bundle).total }
       }
-      .also { Logger.i { "Download summary " + it.joinToString() } }
+      .also { Logger.i("Download summary ${it.joinToString()}") }
       .toMap()
 }

@@ -16,10 +16,13 @@
 
 package com.google.android.fhir.sync.remote
 
-import com.google.android.fhir.db.impl.deserializeResource
-import com.google.android.fhir.db.impl.serializeResource
 import com.google.fhir.model.r4.Resource
 import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.logging.LogLevel
+import io.ktor.client.plugins.logging.Logger
+import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.headers
@@ -27,25 +30,19 @@ import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 
-/** Ktor-based implementation of [FhirHttpService] for cross-platform HTTP operations. */
-internal class KtorHttpService(
-  private val httpClient: HttpClient,
-  private val baseUrl: String,
-) : FhirHttpService {
+/** Ktor implementation of the [FhirHttpService]. */
+internal class KtorHttpService(private val client: HttpClient) : FhirHttpService {
 
   override suspend fun get(path: String, headers: Map<String, String>): Resource {
-    val response =
-      httpClient.get("$baseUrl/$path") {
-        headers {
-          headers.forEach { (key, value) -> append(key, value) }
-          append("Accept", FHIR_JSON_CONTENT_TYPE)
-        }
-      }
-    return deserializeResource(response.bodyAsText())
+    return client
+      .get(path) { headers { headers.forEach { (k, v) -> append(k, v) } } }
+      .body<Resource>()
   }
 
   override suspend fun post(
@@ -53,84 +50,62 @@ internal class KtorHttpService(
     resource: Resource,
     headers: Map<String, String>,
   ): Resource {
-    val response =
-      httpClient.post("$baseUrl/$path") {
-        headers {
-          headers.forEach { (key, value) -> append(key, value) }
-          append("Accept", FHIR_JSON_CONTENT_TYPE)
-        }
-        contentType(ContentType.parse(FHIR_JSON_CONTENT_TYPE))
-        setBody(serializeResource(resource))
+    return client
+      .post(path) {
+        contentType(ContentType.Application.Json)
+        headers { headers.forEach { (k, v) -> append(k, v) } }
+        setBody(resource)
       }
-    return deserializeResource(response.bodyAsText())
-  }
-
-  override suspend fun postJson(
-    path: String,
-    jsonPayload: String,
-    headers: Map<String, String>,
-  ): Resource {
-    val response =
-      httpClient.post("$baseUrl/$path") {
-        headers {
-          headers.forEach { (key, value) -> append(key, value) }
-          append("Accept", FHIR_JSON_CONTENT_TYPE)
-        }
-        contentType(ContentType.parse(FHIR_JSON_CONTENT_TYPE))
-        setBody(jsonPayload)
-      }
-    return deserializeResource(response.bodyAsText())
+      .body<Resource>()
   }
 
   override suspend fun put(
     path: String,
-    jsonPayload: String,
+    resource: Resource,
     headers: Map<String, String>,
   ): Resource {
-    val response =
-      httpClient.put("$baseUrl/$path") {
-        headers {
-          headers.forEach { (key, value) -> append(key, value) }
-          append("Accept", FHIR_JSON_CONTENT_TYPE)
-        }
-        contentType(ContentType.parse(FHIR_JSON_CONTENT_TYPE))
-        setBody(jsonPayload)
+    return client
+      .put(path) {
+        contentType(ContentType.Application.Json)
+        headers { headers.forEach { (k, v) -> append(k, v) } }
+        setBody(resource)
       }
-    return deserializeResource(response.bodyAsText())
+      .body<Resource>()
   }
 
   override suspend fun patch(
     path: String,
-    jsonPayload: String,
+    patchDocument: JsonArray,
     headers: Map<String, String>,
   ): Resource {
-    val response =
-      httpClient.patch("$baseUrl/$path") {
-        headers {
-          headers.forEach { (key, value) -> append(key, value) }
-          append("Accept", FHIR_JSON_CONTENT_TYPE)
-        }
+    return client
+      .patch(path) {
         contentType(ContentType.parse("application/json-patch+json"))
-        setBody(jsonPayload)
+        headers { headers.forEach { (k, v) -> append(k, v) } }
+        setBody(patchDocument)
       }
-    return deserializeResource(response.bodyAsText())
+      .body<Resource>()
   }
 
-  override suspend fun delete(
-    path: String,
-    headers: Map<String, String>,
-  ): Resource {
-    val response =
-      httpClient.delete("$baseUrl/$path") {
-        headers {
-          headers.forEach { (key, value) -> append(key, value) }
-          append("Accept", FHIR_JSON_CONTENT_TYPE)
-        }
-      }
-    return deserializeResource(response.bodyAsText())
+  override suspend fun delete(path: String, headers: Map<String, String>): Resource {
+    return client.delete(path) { headers { headers.forEach { (k, v) -> append(k, v) } } }.body()
   }
 
   companion object {
-    private const val FHIR_JSON_CONTENT_TYPE = "application/fhir+json"
+    fun create(baseUrl: String, json: Json): KtorHttpService {
+      val client = HttpClient {
+        install(ContentNegotiation) { json(json) }
+        install(Logging) {
+          level = LogLevel.INFO
+          logger =
+            object : Logger {
+              override fun log(message: String) {
+                // We could use HttpLogger here
+              }
+            }
+        }
+      }
+      return KtorHttpService(client)
+    }
   }
 }

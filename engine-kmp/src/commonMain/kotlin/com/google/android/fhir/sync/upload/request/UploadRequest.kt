@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,47 +16,32 @@
 
 package com.google.android.fhir.sync.upload.request
 
-import com.google.android.fhir.sync.upload.patch.PatchMapping
+import com.google.fhir.model.r4.Bundle
+import com.google.fhir.model.r4.Resource
 
-/** A request to upload local changes to the FHIR server. */
-internal sealed class UploadRequest(
+/**
+ * Structure represents a request that can be made to upload resources/resource modifications to the
+ * FHIR server.
+ */
+sealed class UploadRequest(
   open val url: String,
-  open val headers: Map<String, String>,
-  /** The JSON string payload to upload. */
-  open val payload: String,
+  open val headers: Map<String, String> = emptyMap(),
+  open val resource: Resource,
 )
 
 /**
- * A [UploadRequest] that bundles multiple patches into a FHIR Transaction Bundle.
- *
- * @param payload The JSON string of the Bundle resource.
- * @param mappings The patch mappings included in this bundle.
+ * A FHIR [Bundle] based request for uploads. Multiple resources/resource modifications can be
+ * uploaded as a single request using this.
  */
-internal data class BundleUploadRequest(
-  override val headers: Map<String, String>,
-  override val payload: String,
-  val mappings: List<PatchMapping>,
-) : UploadRequest(url = ".", headers = headers, payload = payload)
+data class BundleUploadRequest(
+  override val headers: Map<String, String> = emptyMap(),
+  override val resource: Bundle,
+) : UploadRequest(".", headers, resource)
 
-/**
- * A [UploadRequest] for uploading a single patch via a direct URL.
- *
- * @param httpVerb The HTTP method to use (PUT, POST, PATCH, DELETE).
- * @param payload The JSON string payload.
- * @param mapping The patch mapping for this request.
- */
-internal data class UrlUploadRequest(
+/** A [url] based FHIR request to upload resources to the server. */
+data class UrlUploadRequest(
+  val httpVerb: Bundle.HTTPVerb,
   override val url: String,
-  val httpVerb: HttpVerb,
-  override val headers: Map<String, String>,
-  override val payload: String,
-  val mapping: PatchMapping,
-) : UploadRequest(url = url, headers = headers, payload = payload)
-
-internal enum class HttpVerb {
-  GET,
-  POST,
-  PUT,
-  PATCH,
-  DELETE,
-}
+  override val resource: Resource,
+  override val headers: Map<String, String> = emptyMap(),
+) : UploadRequest(url, headers, resource)

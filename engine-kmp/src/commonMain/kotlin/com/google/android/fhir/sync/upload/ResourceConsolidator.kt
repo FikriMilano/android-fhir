@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,21 +18,23 @@ package com.google.android.fhir.sync.upload
 
 import com.google.android.fhir.LocalChangeToken
 import com.google.android.fhir.db.Database
-import com.google.android.fhir.resourceType
+import com.google.android.fhir.lastUpdated
 import com.google.android.fhir.sync.upload.request.UploadRequestGeneratorMode
-import com.google.fhir.model.r4.Resource
+import com.google.android.fhir.versionId
+import com.google.fhir.model.r4.Bundle
+import com.google.fhir.model.r4.DomainResource
 import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlin.time.Instant
 
 /**
  * Represents a mechanism to consolidate resources after they are uploaded.
  *
- * INTERNAL ONLY. This interface should NEVER been exposed as an external API because it works
+ * INTERNAL ONLY. This interface should NEVER have been exposed as an external API because it works
  * together with other components in the upload package to fulfill a specific upload strategy. After
  * a resource is uploaded to a remote FHIR server and a response is returned, we need to consolidate
  * any changes in the database, Examples of this would be, updating the lastUpdated timestamp field,
  * or deleting the local change from the database, or updating the resource IDs and payloads to
- * correspond with the server's feedback.
+ * correspond with the server’s feedback.
  */
 internal fun interface ResourceConsolidator {
 
@@ -55,12 +57,8 @@ internal class DefaultResourceConsolidator(private val database: Database) : Res
         )
         uploadRequestResult.successfulUploadResponseMappings.forEach {
           when (it) {
-            is BundleComponentUploadResponseMapping -> {
-              updateResourceMeta(it)
-            }
-            is ResourceUploadResponseMapping -> {
-              updateResourceMeta(it.output)
-            }
+            is BundleComponentUploadResponseMapping -> updateResourceMeta(it.output)
+            is ResourceUploadResponseMapping -> updateResourceMeta(it.output)
           }
         }
       }
@@ -71,23 +69,24 @@ internal class DefaultResourceConsolidator(private val database: Database) : Res
       }
     }
 
-  private suspend fun updateResourceMeta(response: BundleComponentUploadResponseMapping) {
+  private suspend fun updateResourceMeta(response: Bundle.Entry.Response) {
     response.resourceIdAndType?.let { (id, type) ->
       database.updateVersionIdAndLastUpdated(
         id,
         type,
-        response.etag?.let { getVersionFromETag(it) },
-        response.lastModified?.let { Instant.parse(it) },
+        response.etag?.value?.let { getVersionFromETag(it) },
+        response.lastModified?.value?.toString()?.let { Instant.parse(it) },
       )
     }
   }
 
-  private suspend fun updateResourceMeta(resource: Resource) {
+  private suspend fun updateResourceMeta(resource: DomainResource) {
+    if (resource.id == null) return
     database.updateVersionIdAndLastUpdated(
-      resource.id ?: return,
-      ResourceType.valueOf(resource.resourceType),
-      resource.meta?.versionId?.value,
-      resource.meta?.lastUpdated?.value?.toString()?.let { Instant.parse(it) },
+      resource.id!!,
+      ResourceType.valueOf(resource::class.simpleName!!),
+      resource.versionId,
+      resource.lastUpdated,
     )
   }
 }
@@ -107,7 +106,7 @@ internal class HttpPostResourceConsolidator(private val database: Database) : Re
                 )
                 updateResourcePostSync(
                   preSyncResourceId,
-                  responseMapping,
+                  responseMapping.output,
                 )
               }
             }
@@ -136,15 +135,15 @@ internal class HttpPostResourceConsolidator(private val database: Database) : Re
 
   private suspend fun updateResourcePostSync(
     preSyncResourceId: String,
-    response: BundleComponentUploadResponseMapping,
+    response: Bundle.Entry.Response,
   ) {
     response.resourceIdAndType?.let { (postSyncResourceID, resourceType) ->
       database.updateResourcePostSync(
         preSyncResourceId,
         postSyncResourceID,
         resourceType,
-        response.etag?.let { getVersionFromETag(it) },
-        response.lastModified?.let { Instant.parse(it) },
+        response.etag?.value?.let { getVersionFromETag(it) },
+        response.lastModified?.value?.toString()?.let { Instant.parse(it) },
       )
     }
   }
@@ -166,18 +165,19 @@ private fun getVersionFromETag(eTag: String) =
 
 /**
  * May return a Pair of versionId and resource type extracted from the
- * [BundleComponentUploadResponseMapping.location].
+ * [Bundle.Entry.Response.location].
  *
- * Location may be:
+ * [Bundle.Entry.Response.location] may be:
  * 1. absolute path: `<server-path>/<resource-type>/<resource-id>/_history/<version>`
  * 2. relative path: `<resource-type>/<resource-id>/_history/<version>`
  */
-internal val BundleComponentUploadResponseMapping.resourceIdAndType: Pair<String, ResourceType>?
+internal val Bundle.Entry.Response.resourceIdAndType: Pair<String, ResourceType>?
   get() =
     location
+      ?.value
       ?.split("/")
       ?.takeIf { it.size > 3 }
-      ?.let { it[it.size - 3] to ResourceType.valueOf(it[it.size - 4]) }
+      ?.let { it[it.size - 3] to ResourceType.fromCode(it[it.size - 4]) }
 
 internal object ResourceConsolidatorFactory {
   fun byHttpVerb(
@@ -186,10 +186,10 @@ internal object ResourceConsolidatorFactory {
   ): ResourceConsolidator {
     val httpVerbToUse =
       when (uploadRequestMode) {
-        is UploadRequestGeneratorMode.UrlRequest -> uploadRequestMode.httpVerbForCreate
-        is UploadRequestGeneratorMode.BundleRequest -> uploadRequestMode.httpVerbForCreate
+        is UploadRequestGeneratorMode.UrlRequest -> uploadRequestMode.httpVerbToUseForCreate
+        is UploadRequestGeneratorMode.BundleRequest -> uploadRequestMode.httpVerbToUseForCreate
       }
-    return if (httpVerbToUse.toString() == "POST") {
+    return if (httpVerbToUse == Bundle.HTTPVerb.Post) {
       HttpPostResourceConsolidator(database)
     } else {
       DefaultResourceConsolidator(database)

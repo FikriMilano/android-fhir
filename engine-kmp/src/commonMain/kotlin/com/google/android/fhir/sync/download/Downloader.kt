@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2022-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,29 +16,27 @@
 
 package com.google.android.fhir.sync.download
 
-import com.google.android.fhir.sync.upload.ResourceSyncException
+import com.google.android.fhir.sync.ResourceSyncException
 import com.google.fhir.model.r4.Resource
 import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlinx.coroutines.flow.Flow
 
-/** Interface for downloading FHIR resources from a remote server. */
+/** Module for downloading the resources from the server. */
 internal interface Downloader {
-  /** Downloads resources from the server and emits [DownloadState] updates. */
+  /**
+   * @return Flow of the [DownloadState] which keeps emitting [Resource]s or Error based on the
+   *   response of each page download request. It also updates progress if [ProgressCallback] exists
+   */
   suspend fun download(): Flow<DownloadState>
 }
 
-/** Represents the state of a download operation. */
-sealed class DownloadState {
-  /** Download has started for the given [type] with a [total] count of resources. */
+/* TODO: Generalize the Downloader API to not sequentially download resource by type (https://github.com/google/android-fhir/issues/1884) */
+internal sealed class DownloadState {
+
   data class Started(val type: ResourceType, val total: Int) : DownloadState()
 
-  /** A batch of [resources] has been successfully downloaded. */
-  data class Success(
-    val resources: List<Resource>,
-    val total: Int,
-    val completed: Int,
-  ) : DownloadState()
+  data class Success(val resources: List<Resource>, val total: Int, val completed: Int) :
+    DownloadState()
 
-  /** A download failure has occurred. */
   data class Failure(val syncError: ResourceSyncException) : DownloadState()
 }

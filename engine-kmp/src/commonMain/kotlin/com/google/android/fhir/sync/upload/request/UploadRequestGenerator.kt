@@ -1,5 +1,5 @@
 /*
- * Copyright 2025-2026 Google LLC
+ * Copyright 2023-2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,31 +16,35 @@
 
 package com.google.android.fhir.sync.upload.request
 
+import com.google.android.fhir.LocalChange
 import com.google.android.fhir.sync.upload.patch.Patch
 import com.google.android.fhir.sync.upload.patch.PatchMapping
 import com.google.android.fhir.sync.upload.patch.StronglyConnectedPatchMappings
+import com.google.fhir.model.r4.Bundle
 
 /**
  * Generator that generates [UploadRequest]s from the [Patch]es present in the
- * [List<[StronglyConnectedPatchMappings]>].
+ * [List<[StronglyConnectedPatchMappings]>]. Any implementation of this generator is expected to
+ * output [List<[UploadRequestMapping]>] which maps [UploadRequest] to the corresponding
+ * [LocalChange]s it was generated from.
  */
 internal interface UploadRequestGenerator {
-  /** Generates a list of [UploadRequest]s from the [PatchMapping]s */
+  /** Generates a list of [UploadRequestMapping] from the [PatchMapping]s */
   fun generateUploadRequests(
     mappedPatches: List<StronglyConnectedPatchMappings>,
-  ): List<UploadRequest>
+  ): List<UploadRequestMapping>
 }
 
-/** Mode to decide the type of [UploadRequestGenerator] to use. */
+/** Mode to decide the type of [UploadRequest] that needs to be generated */
 internal sealed class UploadRequestGeneratorMode {
   data class UrlRequest(
-    val httpVerbForCreate: HttpVerb,
-    val httpVerbForUpdate: HttpVerb,
+    val httpVerbToUseForCreate: Bundle.HTTPVerb,
+    val httpVerbToUseForUpdate: Bundle.HTTPVerb,
   ) : UploadRequestGeneratorMode()
 
   data class BundleRequest(
-    val httpVerbForCreate: HttpVerb,
-    val httpVerbForUpdate: HttpVerb,
+    val httpVerbToUseForCreate: Bundle.HTTPVerb,
+    val httpVerbToUseForUpdate: Bundle.HTTPVerb,
     val bundleSize: Int = 500,
   ) : UploadRequestGeneratorMode()
 }
@@ -51,12 +55,27 @@ internal object UploadRequestGeneratorFactory {
   ): UploadRequestGenerator =
     when (mode) {
       is UploadRequestGeneratorMode.UrlRequest ->
-        UrlRequestGenerator.getGenerator(mode.httpVerbForCreate, mode.httpVerbForUpdate)
+        UrlRequestGenerator.getGenerator(mode.httpVerbToUseForCreate, mode.httpVerbToUseForUpdate)
       is UploadRequestGeneratorMode.BundleRequest ->
         TransactionBundleGenerator.getGenerator(
-          mode.httpVerbForCreate,
-          mode.httpVerbForUpdate,
+          mode.httpVerbToUseForCreate,
+          mode.httpVerbToUseForUpdate,
           mode.bundleSize,
         )
     }
 }
+
+internal sealed class UploadRequestMapping(
+  open val localChanges: List<LocalChange>,
+  open val generatedRequest: UploadRequest,
+)
+
+internal data class UrlUploadRequestMapping(
+  override val localChanges: List<LocalChange>,
+  override val generatedRequest: UrlUploadRequest,
+) : UploadRequestMapping(localChanges, generatedRequest)
+
+internal data class BundleUploadRequestMapping(
+  val splitLocalChanges: List<List<LocalChange>>,
+  override val generatedRequest: BundleUploadRequest,
+) : UploadRequestMapping(localChanges = splitLocalChanges.flatten(), generatedRequest)
