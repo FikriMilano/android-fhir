@@ -31,5 +31,3 @@ interface SyncScheduler {
 
   suspend fun cancelPeriodicSync()
 }
-
-expect fun getSyncScheduler(): SyncScheduler
