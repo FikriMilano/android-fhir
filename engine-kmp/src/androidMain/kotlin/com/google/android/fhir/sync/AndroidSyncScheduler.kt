@@ -380,7 +380,3 @@ private fun SyncConstraints.toWorkManagerConstraints() =
       setRequiresStorageNotLow(requiresStorageNotLow)
     }
     .build()
-
-actual fun getSyncScheduler(): SyncScheduler {
-  TODO()
-}

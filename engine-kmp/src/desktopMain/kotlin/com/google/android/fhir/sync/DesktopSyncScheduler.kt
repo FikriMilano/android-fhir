@@ -16,6 +16,26 @@
 
 package com.google.android.fhir.sync
 
-actual fun getSyncScheduler(): SyncScheduler {
-  TODO("Not yet implemented")
+import kotlinx.coroutines.flow.Flow
+
+class DesktopSyncScheduler : SyncScheduler {
+  override suspend fun runOneTimeSync(
+    retryConfiguration: RetryConfiguration?,
+  ): Flow<CurrentSyncJobStatus> {
+    TODO("Not yet implemented")
+  }
+
+  override suspend fun schedulePeriodicSync(
+    config: PeriodicSyncConfiguration,
+  ): Flow<PeriodicSyncJobStatus> {
+    TODO("Not yet implemented")
+  }
+
+  override suspend fun cancelOneTimeSync() {
+    TODO("Not yet implemented")
+  }
+
+  override suspend fun cancelPeriodicSync() {
+    TODO("Not yet implemented")
+  }
 }

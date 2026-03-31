@@ -16,8 +16,8 @@
 
 package com.google.android.fhir.sync
 
+import kotlin.time.Instant
 import kotlinx.coroutines.flow.Flow
-import kotlinx.datetime.Instant
 
 object Sync {
 
