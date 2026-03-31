@@ -42,14 +42,12 @@ internal class FhirHttpDataSource(private val fhirHttpService: FhirHttpService) 
       is UrlDownloadRequest -> fhirHttpService.get(downloadRequest.url, downloadRequest.headers)
       is BundleDownloadRequest ->
         fhirHttpService.post(".", downloadRequest.bundle, downloadRequest.headers)
-      else -> error("Download request type ${downloadRequest::class.simpleName} not supported")
     }
 
   override suspend fun upload(request: UploadRequest): Resource =
     when (request) {
       is BundleUploadRequest -> fhirHttpService.post(request.url, request.resource, request.headers)
       is UrlUploadRequest -> uploadIndividualRequest(request)
-      else -> error("Upload request type ${request::class.simpleName} not supported")
     }
 
   private suspend fun uploadIndividualRequest(request: UrlUploadRequest): Resource =
