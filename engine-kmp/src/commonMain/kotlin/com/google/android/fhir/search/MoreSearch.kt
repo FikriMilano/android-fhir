@@ -494,7 +494,7 @@ internal fun getConditionParamPair(
   value: BigDecimal,
 ): ConditionParam<Double> {
   require(
-    value.scale > 0 ||
+    (value.precision - 1 - value.exponent) > 0 ||
       (prefix != ParamPrefixEnum.STARTS_AFTER && prefix != ParamPrefixEnum.ENDS_BEFORE),
   ) {
     "Prefix $prefix not allowed for Integer type"
@@ -583,9 +583,28 @@ internal fun getConditionParamPair(
   return ConditionParam(queryBuilder.toString(), argList)
 }
 
+/**
+ * Returns the range for an implicit precision search (see
+ * https://www.hl7.org/fhir/search.html#number). The value is directly related to the number of
+ * decimal digits.
+ *
+ * For example, a search with a value 100.00 (has 2 decimal places) would match any value in
+ * [99.995, 100.005) and the function returns 0.005.
+ *
+ * For integers which have no decimal places the function returns 5. For example a search with a
+ * value 1000 would match any value in [995, 1005) and the function returns 5.
+ *
+ * Note: ionspin BigDecimal's `scale` property comes from DecimalMode and is -1 when unset. We
+ * compute Java-style scale (number of decimal places) from the exponent instead.
+ */
 private fun BigDecimal.getRange(): BigDecimal {
-  return if (scale >= 0) {
-    BigDecimal.fromDouble(0.5).divide(BigDecimal.fromInt(10).pow(scale))
+  // In ionspin BigDecimal, value = significand * 10^(exponent - precision + 1).
+  // Java-style scale (number of decimal places) = precision - 1 - exponent.
+  // For example: 5.403 → significand=5403, exponent=0, precision=4 → javaScale=3
+  //              1000  → significand=1,    exponent=3, precision=1 → javaScale=-3 (integer)
+  val javaScale = precision - 1 - exponent
+  return if (javaScale > 0) {
+    BigDecimal.fromDouble(0.5).divide(BigDecimal.fromInt(10).pow(javaScale))
   } else {
     BigDecimal.fromInt(5)
   }

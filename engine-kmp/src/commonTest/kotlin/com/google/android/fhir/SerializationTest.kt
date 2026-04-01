@@ -17,12 +17,18 @@
 package com.google.android.fhir
 
 import com.google.fhir.model.r4.FhirR4Json
+import com.google.fhir.model.r4.HumanName
 import com.google.fhir.model.r4.Patient
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 
+/**
+ * Adapted from engine module's use of FhirContext.forR4Cached().newJsonParser() for JSON
+ * serialization/deserialization. Engine-kmp uses kotlin-fhir's FhirR4Json instead of HAPI's
+ * IParser.
+ */
 class SerializationTest {
 
   private val parser = FhirR4Json()
@@ -66,7 +72,7 @@ class SerializationTest {
         id = "test-2",
         name =
           listOf(
-            com.google.fhir.model.r4.HumanName(
+            HumanName(
               family = com.google.fhir.model.r4.String("Smith"),
               given = listOf(com.google.fhir.model.r4.String("Jane")),
             ),
