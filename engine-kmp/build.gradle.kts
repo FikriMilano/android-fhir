@@ -1,6 +1,7 @@
 plugins {
   id("org.jetbrains.kotlin.multiplatform")
   id("com.android.kotlin.multiplatform.library")
+  alias(libs.plugins.ksp)
 }
 
 kotlin {
@@ -39,6 +40,8 @@ kotlin {
         implementation(libs.kotlin.fhir)
         implementation(libs.fhir.path)
         implementation(libs.kermit)
+        implementation(libs.androidx.room.runtime)
+        implementation(libs.androidx.sqlite.bundled)
         implementation(libs.androidx.datastore.preferences)
         implementation(libs.ktor.client.core)
         implementation(libs.ktor.client.content.negotiation)
@@ -48,11 +51,29 @@ kotlin {
         implementation(libs.ktor.serialization.kotlinx.json)
       }
     }
+    commonTest {
+      dependencies {
+        implementation(libs.kotlin.test)
+        implementation(libs.kotlinx.coroutines.test)
+      }
+    }
     val androidMain by getting {
       dependencies {
         implementation(libs.androidx.work.runtime)
         implementation(libs.androidx.lifecycle.livedata)
       }
     }
+  }
+}
+
+dependencies {
+  listOf(
+    "kspAndroid",
+    "kspDesktop",
+    "kspIosX64",
+    "kspIosArm64",
+    "kspIosSimulatorArm64",
+  ).forEach {
+    add(it, libs.androidx.room.compiler)
   }
 }
