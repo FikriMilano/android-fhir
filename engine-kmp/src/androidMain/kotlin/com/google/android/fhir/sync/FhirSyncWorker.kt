@@ -23,6 +23,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import co.touchlab.kermit.Logger
 import com.google.android.fhir.FhirEngine
+import com.google.android.fhir.FhirEngineProvider
 import com.google.android.fhir.sync.download.DownloaderImpl
 import com.google.android.fhir.sync.upload.UploadStrategy
 import com.google.android.fhir.sync.upload.Uploader
@@ -63,11 +64,12 @@ abstract class FhirSyncWorker(appContext: Context, workerParams: WorkerParameter
    */
   abstract fun getUploadStrategy(): UploadStrategy
 
-  /** Returns the [DataSource] instance used for network operations. */
-  internal abstract fun getDataSource(): DataSource?
+  /** Returns the [DataSource] instance from [FhirEngineProvider]. */
+  internal open fun getDataSource(): DataSource? = FhirEngineProvider.getDataSource()
 
   /** Returns the [FhirDataStore] instance for persisting sync state and metadata. */
-  internal abstract fun getFhirDataStore(): FhirDataStore
+  internal open fun getFhirDataStore(): FhirDataStore =
+    FhirDataStore(createDataStore(applicationContext))
 
   private val json = Json { ignoreUnknownKeys = true }
 

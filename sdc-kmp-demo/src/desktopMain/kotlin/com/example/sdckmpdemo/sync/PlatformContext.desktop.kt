@@ -14,13 +14,9 @@
  * limitations under the License.
  */
 
-package com.google.android.fhir.sync
+package com.example.sdckmpdemo.sync
 
-import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
+import androidx.compose.runtime.Composable
 
-@PublishedApi
-internal fun createDataStore(context: Context): DataStore<Preferences> = createDataStore {
-  context.filesDir.resolve(fhirDataStoreFileName).absolutePath
-}
+@Composable
+actual fun providePlatformContext(): Any = Unit

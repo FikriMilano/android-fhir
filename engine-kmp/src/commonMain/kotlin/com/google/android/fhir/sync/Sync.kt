@@ -30,6 +30,7 @@ object Sync {
    * @param retryConfiguration configuration to guide the retry mechanism, or `null` to stop retry.
    * @return a [Flow] of [CurrentSyncJobStatus]
    */
+  @PublishedApi
   internal suspend fun oneTimeSync(
     scheduler: SyncScheduler,
     retryConfiguration: RetryConfiguration? = defaultRetryConfiguration,
@@ -44,6 +45,7 @@ object Sync {
    * @param config configuration to determine the sync frequency and retry mechanism
    * @return a [Flow] of [PeriodicSyncJobStatus]
    */
+  @PublishedApi
   internal suspend fun periodicSync(
     scheduler: SyncScheduler,
     config: PeriodicSyncConfiguration,

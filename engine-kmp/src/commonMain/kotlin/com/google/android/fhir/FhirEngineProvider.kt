@@ -21,6 +21,9 @@ import com.google.android.fhir.impl.FhirEngineImpl
 import com.google.android.fhir.index.ResourceIndexer
 import com.google.android.fhir.index.SearchParamDefinition
 import com.google.android.fhir.index.SearchParamDefinitionsProviderImpl
+import com.google.android.fhir.sync.DataSource
+import com.google.android.fhir.sync.remote.FhirHttpDataSource
+import com.google.android.fhir.sync.remote.KtorHttpService
 
 /**
  * Provides singleton access to the [FhirEngine] instance.
@@ -39,6 +42,7 @@ import com.google.android.fhir.index.SearchParamDefinitionsProviderImpl
 object FhirEngineProvider {
   private var configuration: FhirEngineConfiguration? = null
   private var fhirEngine: FhirEngine? = null
+  private var dataSource: DataSource? = null
 
   /**
    * Initializes the [FhirEngineProvider] with the given [configuration].
@@ -70,9 +74,23 @@ object FhirEngineProvider {
     return fhirEngine!!
   }
 
+  /**
+   * Returns the [DataSource] instance, or `null` if no [ServerConfiguration] was provided.
+   *
+   * Only available after [init] has been called.
+   */
+  @PublishedApi
+  internal fun getDataSource(): DataSource? {
+    checkNotNull(configuration) {
+      "FhirEngineProvider not initialized. Call FhirEngineProvider.init() first."
+    }
+    return dataSource
+  }
+
   /** Clears the singleton instance. Intended for testing only. */
   internal fun clearInstance() {
     fhirEngine = null
+    dataSource = null
     configuration = null
   }
 
@@ -84,6 +102,17 @@ object FhirEngineProvider {
       SearchParamDefinitionsProviderImpl(customParams = buildCustomParamsMap(config))
     val resourceIndexer = ResourceIndexer(searchParamDefinitionsProvider)
     val database = DatabaseImpl(platformContext, resourceIndexer)
+
+    config.serverConfiguration?.let { serverConfig ->
+      dataSource =
+        FhirHttpDataSource(
+          KtorHttpService.builder(serverConfig.baseUrl, serverConfig.networkConfiguration)
+            .setAuthenticator(serverConfig.authenticator)
+            .setHttpLogger(serverConfig.httpLogger)
+            .build(),
+        )
+    }
+
     return FhirEngineImpl(database)
   }
 

@@ -44,6 +44,7 @@ import kotlinx.serialization.json.Json
  * @param workerClass The class of the [FhirSyncWorker] to be used for sync jobs.
  * @param dataStore The [FhirDataStore] instance for persisting sync state and metadata.
  */
+@PublishedApi
 internal class AndroidSyncScheduler(
   private val context: Context,
   private val workerClass: Class<out FhirSyncWorker>,

@@ -14,13 +14,25 @@
  * limitations under the License.
  */
 
-package com.google.android.fhir.sync
+package com.example.sdckmpdemo.sync
 
-import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
+import kotlinx.coroutines.flow.StateFlow
 
-@PublishedApi
-internal fun createDataStore(context: Context): DataStore<Preferences> = createDataStore {
-  context.filesDir.resolve(fhirDataStoreFileName).absolutePath
+sealed class SyncUiState {
+  data object Idle : SyncUiState()
+
+  data object Syncing : SyncUiState()
+
+  data class Completed(val timestamp: String) : SyncUiState()
+
+  data class Error(val message: String) : SyncUiState()
 }
+
+interface SyncManager {
+  val syncState: StateFlow<SyncUiState>
+  val isSyncAvailable: Boolean
+
+  fun triggerSync()
+}
+
+expect fun createSyncManager(platformContext: Any = Unit): SyncManager
