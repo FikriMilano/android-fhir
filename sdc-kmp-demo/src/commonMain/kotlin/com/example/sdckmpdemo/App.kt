@@ -112,7 +112,7 @@ fun App() {
 }
 
 val HumanName?.displayInApp: String
-  get() = this?.given?.plus(family)?.joinToString(separator = " ") { it?.value.toString() } ?: ""
+  get() = this?.given?.plus(family)?.joinToString(separator = " ") { it?.value ?: "" } ?: ""
 
 val List<HumanName?>?.humanNames: String
   get() = this?.joinToString(separator = ", ") { it.displayInApp } ?: ""

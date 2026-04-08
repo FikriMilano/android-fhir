@@ -152,13 +152,13 @@ private fun PatientListItem(obj: Patient, onclick: () -> Unit = {}, modifier: Mo
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
-          obj.birthDate?.value.toString(),
+          obj.birthDate?.value?.toString() ?: "",
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(modifier = Modifier.width(4.dp))
         Text(
-          text = obj.gender?.value.toString(),
+          text = obj.gender?.value?.toString() ?: "",
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
