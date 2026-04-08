@@ -76,18 +76,19 @@ internal class TransactionBundleGenerator(
     patches: List<PatchMapping>,
   ): Pair<List<List<LocalChange>>, BundleUploadRequest> {
     val splitLocalChanges = mutableListOf<List<LocalChange>>()
+    val entries = mutableListOf<Bundle.Entry>()
+    patches.forEach {
+      splitLocalChanges.add(it.localChanges)
+      entries.add(
+        getBundleEntryComponentGeneratorForPatch(it.generatedPatch, useETagForUpload)
+          .getEntry(it.generatedPatch),
+      )
+    }
     val bundleRequest =
-      Bundle(type = Enumeration(value = Bundle.BundleType.Transaction)).apply {
-        patches.forEach {
-          splitLocalChanges.add(it.localChanges)
-          (entry as MutableList).apply {
-            add(
-              getBundleEntryComponentGeneratorForPatch(it.generatedPatch, useETagForUpload)
-                .getEntry(it.generatedPatch),
-            )
-          }
-        }
-      }
+      Bundle(
+        type = Enumeration(value = Bundle.BundleType.Transaction),
+        entry = entries,
+      )
     return splitLocalChanges to
       BundleUploadRequest(
         resource = bundleRequest,

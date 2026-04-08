@@ -2,6 +2,7 @@ plugins {
   id("org.jetbrains.kotlin.multiplatform")
   id("com.android.kotlin.multiplatform.library")
   alias(libs.plugins.ksp)
+  alias(libs.plugins.kotlin.serialization)
 }
 
 kotlin {
@@ -11,6 +12,7 @@ kotlin {
     namespace = "com.google.android.fhir.engine"
     compileSdk = Sdk.COMPILE_SDK
     minSdk = Sdk.MIN_SDK
+    withHostTestBuilder {}
   }
 
   jvm("desktop")
@@ -61,6 +63,16 @@ kotlin {
       dependencies {
         implementation(libs.androidx.work.runtime)
         implementation(libs.androidx.lifecycle.livedata)
+      }
+    }
+    getByName("androidHostTest") {
+      dependencies {
+        implementation(libs.junit)
+        implementation(libs.robolectric)
+        implementation(libs.androidx.test.core)
+        implementation(libs.androidx.work.testing)
+        implementation(libs.kotlin.test.junit)
+        implementation(libs.kotlinx.coroutines.test)
       }
     }
   }

@@ -56,6 +56,6 @@ class AcceptRemoteConflictResolverTest {
       )
 
     val result = AcceptRemoteConflictResolver.resolve(localResource, remoteResource)
-    assertIs<ConflictResolutionResult.AcceptRemote>(result)
+    assertIs<Resolved>(result)
   }
 }
