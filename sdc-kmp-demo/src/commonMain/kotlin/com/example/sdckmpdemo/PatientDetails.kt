@@ -46,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,11 +70,16 @@ fun PatientDetails(
   modifier: Modifier = Modifier,
 ) {
   val patients by viewModel.patients.collectAsState()
-  val patient = patients.firstOrNull { it.id == id } ?: run {
-    onBackClick()
-    return
-  }
+  val patient = patients.firstOrNull { it.id == id }
   var showDeleteDialog by remember { mutableStateOf(false) }
+
+  LaunchedEffect(patient) {
+    if (patient == null) {
+      onBackClick()
+    }
+  }
+
+  if (patient == null) return
 
   Scaffold(
     topBar = {
@@ -150,7 +156,6 @@ fun PatientDetails(
               onClick = {
                 showDeleteDialog = false
                 viewModel.deletePatient(id)
-                onBackClick()
               },
             ) {
               Text("Delete", color = MaterialTheme.colorScheme.error)
