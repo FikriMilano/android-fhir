@@ -41,7 +41,7 @@ class PatientViewModel : ViewModel() {
 
   init {
     viewModelScope.launch {
-      seedIfEmpty()
+//      seedIfEmpty()
       refreshPatients()
     }
   }

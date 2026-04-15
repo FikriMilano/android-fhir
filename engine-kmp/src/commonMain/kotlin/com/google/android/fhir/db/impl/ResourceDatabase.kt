@@ -21,8 +21,11 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.RoomDatabaseConstructor
 import androidx.room.TypeConverters
+import com.google.android.fhir.db.impl.dao.LocalChangeDao
 import com.google.android.fhir.db.impl.dao.ResourceDao
 import com.google.android.fhir.db.impl.entities.DateIndexEntity
+import com.google.android.fhir.db.impl.entities.LocalChangeEntity
+import com.google.android.fhir.db.impl.entities.LocalChangeResourceReferenceEntity
 import com.google.android.fhir.db.impl.entities.DateTimeIndexEntity
 import com.google.android.fhir.db.impl.entities.NumberIndexEntity
 import com.google.android.fhir.db.impl.entities.PositionIndexEntity
@@ -46,14 +49,18 @@ import com.google.android.fhir.db.impl.entities.UriIndexEntity
       DateTimeIndexEntity::class,
       NumberIndexEntity::class,
       PositionIndexEntity::class,
+      LocalChangeEntity::class,
+      LocalChangeResourceReferenceEntity::class,
     ],
-  version = 1,
+  version = 2,
   exportSchema = true,
 )
 @TypeConverters(DbTypeConverters::class)
 @ConstructedBy(ResourceDatabaseConstructor::class)
 internal abstract class ResourceDatabase : RoomDatabase() {
   abstract fun resourceDao(): ResourceDao
+
+  abstract fun localChangeDao(): LocalChangeDao
 }
 
 @Suppress("NO_ACTUAL_FOR_EXPECT")

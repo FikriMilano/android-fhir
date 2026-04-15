@@ -63,6 +63,17 @@ kotlin {
       dependencies {
         implementation(libs.androidx.work.runtime)
         implementation(libs.androidx.lifecycle.livedata)
+        implementation(libs.ktor.client.okhttp)
+      }
+    }
+    val desktopMain by getting {
+      dependencies {
+        implementation(libs.ktor.client.java)
+      }
+    }
+    iosMain {
+      dependencies {
+        implementation(libs.ktor.client.darwin)
       }
     }
     getByName("androidHostTest") {

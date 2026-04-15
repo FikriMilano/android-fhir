@@ -25,6 +25,8 @@ import com.google.android.fhir.search.Search
 import com.google.android.fhir.search.count
 import com.google.android.fhir.search.execute
 import com.google.android.fhir.sync.ConflictResolver
+import com.google.android.fhir.sync.upload.LocalChangeFetcherFactory
+import com.google.android.fhir.sync.upload.ResourceConsolidatorFactory
 import com.google.android.fhir.sync.upload.SyncUploadProgress
 import com.google.android.fhir.sync.upload.UploadRequestResult
 import com.google.android.fhir.sync.upload.UploadStrategy
@@ -32,6 +34,9 @@ import com.google.fhir.model.r4.Resource
 import com.google.fhir.model.r4.terminologies.ResourceType
 import kotlin.time.Instant
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onEach
 
 /**
  * Implementation of [FhirEngine] backed by a [Database]. Provides the minimum operations needed for
@@ -65,8 +70,39 @@ internal class FhirEngineImpl(private val database: Database) : FhirEngine {
       (suspend (List<LocalChange>, List<LocalChangeResourceReference>) -> Flow<
           UploadRequestResult,
         >),
-  ): Flow<SyncUploadProgress> {
-    throw NotImplementedError("syncUpload() is not yet implemented in the vertical slice")
+  ): Flow<SyncUploadProgress> = flow {
+    val resourceConsolidator =
+      ResourceConsolidatorFactory.byHttpVerb(uploadStrategy.requestGeneratorMode, database)
+    val localChangeFetcher =
+      LocalChangeFetcherFactory.byMode(uploadStrategy.localChangesFetchMode, database)
+
+    emit(
+      SyncUploadProgress(
+        remaining = localChangeFetcher.total,
+        initialTotal = localChangeFetcher.total,
+      ),
+    )
+
+    while (localChangeFetcher.hasNext()) {
+      val localChanges = localChangeFetcher.next()
+      val localChangeReferences =
+        database.getLocalChangeResourceReferences(localChanges.flatMap { it.token.ids })
+      val uploadRequestResult =
+        upload(localChanges, localChangeReferences)
+          .onEach { result ->
+            resourceConsolidator.consolidate(result)
+            val newProgress =
+              when (result) {
+                is UploadRequestResult.Success -> localChangeFetcher.getProgress()
+                is UploadRequestResult.Failure ->
+                  localChangeFetcher.getProgress().copy(uploadError = result.uploadError)
+              }
+            emit(newProgress)
+          }
+          .firstOrNull { it is UploadRequestResult.Failure }
+
+      if (uploadRequestResult is UploadRequestResult.Failure) break
+    }
   }
 
   override suspend fun syncDownload(

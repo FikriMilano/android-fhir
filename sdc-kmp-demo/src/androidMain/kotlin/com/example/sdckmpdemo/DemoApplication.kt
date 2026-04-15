@@ -24,7 +24,7 @@ class DemoApplication : Application(), DataCaptureConfig.Provider {
 
   override fun onCreate() {
     super.onCreate()
-    initializeFhirEngine("https://hapi.fhir.org/baseR4/")
+    initializeFhirEngine("https://hapi.fhir.org/baseR4/", this)
     DataCapture.initialize(this)
   }
 

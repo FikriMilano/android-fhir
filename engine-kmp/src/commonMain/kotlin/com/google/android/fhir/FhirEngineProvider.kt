@@ -43,6 +43,7 @@ object FhirEngineProvider {
   private var configuration: FhirEngineConfiguration? = null
   private var fhirEngine: FhirEngine? = null
   private var dataSource: DataSource? = null
+  private var platformContext: Any = Unit
 
   /**
    * Initializes the [FhirEngineProvider] with the given [configuration].
@@ -50,11 +51,12 @@ object FhirEngineProvider {
    * This must be called before [getInstance]. Calling it again after initialization will throw an
    * [IllegalStateException].
    */
-  fun init(configuration: FhirEngineConfiguration) {
+  fun init(configuration: FhirEngineConfiguration, platformContext: Any = Unit) {
     check(this.configuration == null) {
       "FhirEngineProvider has already been initialized."
     }
     this.configuration = configuration
+    this.platformContext = platformContext
   }
 
   /**
@@ -68,8 +70,9 @@ object FhirEngineProvider {
       checkNotNull(configuration) {
         "FhirEngineProvider not initialized. Call FhirEngineProvider.init() first."
       }
+    val context = if (platformContext == Unit) this.platformContext else platformContext
     if (fhirEngine == null) {
-      fhirEngine = buildFhirEngine(platformContext, config)
+      fhirEngine = buildFhirEngine(context, config)
     }
     return fhirEngine!!
   }
@@ -92,6 +95,7 @@ object FhirEngineProvider {
     fhirEngine = null
     dataSource = null
     configuration = null
+    platformContext = Unit
   }
 
   private fun buildFhirEngine(

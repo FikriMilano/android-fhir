@@ -92,4 +92,33 @@ internal interface ResourceDao {
 
   @Query("DELETE FROM ResourceEntity")
   suspend fun deleteAllResources()
+
+  @Query(
+    """
+    UPDATE ResourceEntity
+    SET versionId = :versionId, lastUpdatedRemote = :lastUpdated
+    WHERE resourceId = :resourceId AND resourceType = :resourceType
+    """,
+  )
+  suspend fun updateVersionIdAndLastUpdated(
+    resourceId: String,
+    resourceType: String,
+    versionId: String?,
+    lastUpdated: Long?,
+  )
+
+  @Query(
+    """
+    UPDATE ResourceEntity
+    SET resourceId = :newResourceId, versionId = :versionId, lastUpdatedRemote = :lastUpdated
+    WHERE resourceId = :oldResourceId AND resourceType = :resourceType
+    """,
+  )
+  suspend fun updateResourceIdAndMeta(
+    oldResourceId: String,
+    newResourceId: String,
+    resourceType: String,
+    versionId: String?,
+    lastUpdated: Long?,
+  )
 }

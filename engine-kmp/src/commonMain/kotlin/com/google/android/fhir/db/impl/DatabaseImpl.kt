@@ -26,6 +26,8 @@ import com.google.android.fhir.db.LocalChangeResourceReference
 import com.google.android.fhir.db.ResourceNotFoundException
 import com.google.android.fhir.db.ResourceWithUUID
 import com.google.android.fhir.search.ReferencedResourceResult
+import com.google.android.fhir.db.impl.entities.LocalChangeEntity
+import com.google.android.fhir.db.impl.entities.LocalChangeResourceReferenceEntity
 import com.google.android.fhir.db.impl.entities.DateIndexEntity
 import com.google.android.fhir.db.impl.entities.DateTimeIndexEntity
 import com.google.android.fhir.db.impl.entities.NumberIndexEntity
@@ -65,9 +67,11 @@ internal class DatabaseImpl(
     getDatabaseBuilder(platformContext)
       .setDriver(BundledSQLiteDriver())
       .setQueryCoroutineContext(Dispatchers.IO)
+      .fallbackToDestructiveMigration(dropAllTables = true)
       .build()
 
   private val resourceDao by lazy { db.resourceDao() }
+  private val localChangeDao by lazy { db.localChangeDao() }
 
   override suspend fun <R : Resource> insert(vararg resource: R): List<String> {
     return resource.map { res ->
@@ -86,13 +90,14 @@ internal class DatabaseImpl(
           res
         }
 
+      val serialized = serializeResource(resourceWithId)
       val entity =
         ResourceEntity(
           id = 0,
           resourceUuid = resourceUuid,
           resourceType = resourceTypeName,
           resourceId = resourceId,
-          serializedResource = serializeResource(resourceWithId),
+          serializedResource = serialized,
           versionId = null,
           lastUpdatedRemote = null,
           lastUpdatedLocal = now,
@@ -101,6 +106,17 @@ internal class DatabaseImpl(
 
       val indices = resourceIndexer.index(resourceWithId)
       insertIndices(resourceUuid, resourceTypeName, indices)
+
+      // Track local change
+      createLocalChange(
+        resourceType = resourceTypeName,
+        resourceId = resourceId,
+        resourceUuid = resourceUuid,
+        timestamp = now,
+        type = LocalChange.Type.INSERT.value,
+        payload = serialized,
+        versionId = null,
+      )
 
       resourceId
     }
@@ -168,9 +184,25 @@ internal class DatabaseImpl(
           ?: throw ResourceNotFoundException(resourceTypeName, resourceId)
 
       val now = Clock.System.now().toEpochMilliseconds()
+      val newSerialized = serializeResource(res)
+
+      // Compute JSON diff for the local change
+      val jsonDiff = JsonDiff.diff(existing.serializedResource, newSerialized)
+      if (jsonDiff != "[]") {
+        createLocalChange(
+          resourceType = resourceTypeName,
+          resourceId = resourceId,
+          resourceUuid = existing.resourceUuid,
+          timestamp = now,
+          type = LocalChange.Type.UPDATE.value,
+          payload = jsonDiff,
+          versionId = existing.versionId,
+        )
+      }
+
       val updatedEntity =
         existing.copy(
-          serializedResource = serializeResource(res),
+          serializedResource = newSerialized,
           lastUpdatedLocal = now,
         )
       resourceDao.insertResource(updatedEntity)
@@ -186,8 +218,11 @@ internal class DatabaseImpl(
     versionId: String?,
     lastUpdated: Instant?,
   ) {
-    throw NotImplementedError(
-      "updateVersionIdAndLastUpdated() is not yet implemented in the vertical slice",
+    resourceDao.updateVersionIdAndLastUpdated(
+      resourceId = resourceId,
+      resourceType = resourceType.name,
+      versionId = versionId,
+      lastUpdated = lastUpdated?.toEpochMilliseconds(),
     )
   }
 
@@ -198,13 +233,29 @@ internal class DatabaseImpl(
     versionId: String?,
     lastUpdated: Instant?,
   ) {
-    throw NotImplementedError(
-      "updateResourcePostSync() is not yet implemented in the vertical slice",
+    resourceDao.updateResourceIdAndMeta(
+      oldResourceId = oldResourceId,
+      newResourceId = newResourceId,
+      resourceType = resourceType.name,
+      versionId = versionId,
+      lastUpdated = lastUpdated?.toEpochMilliseconds(),
     )
   }
 
   override suspend fun delete(type: ResourceType, id: String) {
-    resourceDao.deleteResource(resourceId = id, resourceType = type.name)
+    val existing = resourceDao.getResourceEntity(resourceId = id, resourceType = type.name)
+    val rowsDeleted = resourceDao.deleteResource(resourceId = id, resourceType = type.name)
+    if (rowsDeleted > 0 && existing != null) {
+      createLocalChange(
+        resourceType = type.name,
+        resourceId = id,
+        resourceUuid = existing.resourceUuid,
+        timestamp = Clock.System.now().toEpochMilliseconds(),
+        type = LocalChange.Type.DELETE.value,
+        payload = "",
+        versionId = existing.versionId,
+      )
+    }
   }
 
   @Suppress("UNCHECKED_CAST")
@@ -256,55 +307,138 @@ internal class DatabaseImpl(
     }
   }
 
-  override suspend fun getAllLocalChanges(): List<LocalChange> {
-    throw NotImplementedError("getAllLocalChanges() is not yet implemented in the vertical slice")
-  }
+  override suspend fun getAllLocalChanges(): List<LocalChange> =
+    localChangeDao.getAllLocalChanges().map { it.toLocalChange() }
 
-  override suspend fun getAllChangesForEarliestChangedResource(): List<LocalChange> {
-    throw NotImplementedError(
-      "getAllChangesForEarliestChangedResource() is not yet implemented in the vertical slice",
-    )
-  }
+  override suspend fun getAllChangesForEarliestChangedResource(): List<LocalChange> =
+    localChangeDao.getAllChangesForEarliestChangedResource().map { it.toLocalChange() }
 
-  override suspend fun getLocalChangesCount(): Int {
-    throw NotImplementedError("getLocalChangesCount() is not yet implemented in the vertical slice")
-  }
+  override suspend fun getLocalChangesCount(): Int = localChangeDao.getLocalChangesCount()
 
   override suspend fun deleteUpdates(token: LocalChangeToken) {
-    throw NotImplementedError("deleteUpdates() is not yet implemented in the vertical slice")
+    token.ids.forEach { localChangeDao.discardLocalChanges(it) }
   }
 
   override suspend fun deleteUpdates(resources: List<Resource>) {
-    throw NotImplementedError("deleteUpdates() is not yet implemented in the vertical slice")
+    resources.forEach { res ->
+      val id = res.id ?: return@forEach
+      localChangeDao.discardLocalChanges(id, res.resourceType)
+    }
   }
 
   override suspend fun updateResourceAndReferences(
     currentResourceId: String,
     updatedResource: Resource,
   ) {
-    throw NotImplementedError(
-      "updateResourceAndReferences() is not yet implemented in the vertical slice",
-    )
+    // Simplified: update the resource only, skip cross-resource reference propagation
+    update(updatedResource)
   }
 
-  override suspend fun getLocalChanges(type: ResourceType, id: String): List<LocalChange> {
-    throw NotImplementedError("getLocalChanges() is not yet implemented in the vertical slice")
-  }
+  override suspend fun getLocalChanges(type: ResourceType, id: String): List<LocalChange> =
+    localChangeDao.getLocalChanges(type.name, id).map { it.toLocalChange() }
 
-  override suspend fun getLocalChanges(resourceUuid: Uuid): List<LocalChange> {
-    throw NotImplementedError("getLocalChanges() is not yet implemented in the vertical slice")
-  }
+  override suspend fun getLocalChanges(resourceUuid: Uuid): List<LocalChange> =
+    localChangeDao.getLocalChangesByUuid(resourceUuid.toString()).map { it.toLocalChange() }
 
   override suspend fun purge(type: ResourceType, ids: Set<String>, forcePurge: Boolean) {
-    throw NotImplementedError("purge() is not yet implemented in the vertical slice")
+    ids.forEach { id ->
+      localChangeDao.discardLocalChanges(id, type.name)
+      resourceDao.deleteResource(resourceId = id, resourceType = type.name)
+    }
   }
 
   override suspend fun getLocalChangeResourceReferences(
     localChangeIds: List<Long>,
   ): List<LocalChangeResourceReference> {
-    throw NotImplementedError(
-      "getLocalChangeResourceReferences() is not yet implemented in the vertical slice",
-    )
+    if (localChangeIds.isEmpty()) return emptyList()
+    return localChangeDao.getReferencesForLocalChanges(localChangeIds).map {
+      LocalChangeResourceReference(
+        localChangeId = it.localChangeId,
+        resourceReferenceValue = it.resourceReferenceValue,
+        resourceReferencePath = it.resourceReferencePath,
+      )
+    }
+  }
+
+  // --- Local change helpers ---
+
+  private suspend fun createLocalChange(
+    resourceType: String,
+    resourceId: String,
+    resourceUuid: String,
+    timestamp: Long,
+    type: Int,
+    payload: String,
+    versionId: String?,
+  ) {
+    val localChangeId =
+      localChangeDao.addLocalChange(
+        LocalChangeEntity(
+          id = 0,
+          resourceType = resourceType,
+          resourceId = resourceId,
+          resourceUuid = resourceUuid,
+          timestamp = timestamp,
+          type = type,
+          payload = payload,
+          versionId = versionId,
+        ),
+      )
+    // Extract resource references from the payload for INSERT type
+    if (type == LocalChange.Type.INSERT.value && payload.isNotEmpty()) {
+      val refs = extractResourceReferences(payload)
+      if (refs.isNotEmpty()) {
+        localChangeDao.insertLocalChangeResourceReferences(
+          refs.map { (path, value) ->
+            LocalChangeResourceReferenceEntity(
+              id = 0,
+              localChangeId = localChangeId,
+              resourceReferencePath = path,
+              resourceReferenceValue = value,
+            )
+          },
+        )
+      }
+    }
+  }
+
+  /**
+   * Extracts resource references from a FHIR resource JSON string. Walks the JSON tree looking for
+   * objects with a "reference" key. Returns a list of (path, referenceValue) pairs.
+   */
+  private fun extractResourceReferences(json: String): List<Pair<String?, String>> {
+    val refs = mutableListOf<Pair<String?, String>>()
+    try {
+      val element = kotlinx.serialization.json.Json.parseToJsonElement(json)
+      collectReferences("", element, refs)
+    } catch (_: Exception) {
+      // If JSON parsing fails, return empty references
+    }
+    return refs
+  }
+
+  private fun collectReferences(
+    path: String,
+    element: kotlinx.serialization.json.JsonElement,
+    refs: MutableList<Pair<String?, String>>,
+  ) {
+    when (element) {
+      is kotlinx.serialization.json.JsonObject -> {
+        val refValue = element["reference"]
+        if (refValue is kotlinx.serialization.json.JsonPrimitive && refValue.isString) {
+          refs.add(path to refValue.content)
+        }
+        element.forEach { (key, value) ->
+          collectReferences("$path/$key", value, refs)
+        }
+      }
+      is kotlinx.serialization.json.JsonArray -> {
+        element.forEachIndexed { index, value ->
+          collectReferences("$path/$index", value, refs)
+        }
+      }
+      else -> {}
+    }
   }
 
   // --- Private helpers ---

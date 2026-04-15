@@ -19,6 +19,7 @@ package com.google.android.fhir.sync.remote
 import co.touchlab.kermit.Logger as KermitLogger
 import com.google.android.fhir.NetworkConfiguration
 import com.google.android.fhir.sync.HttpAuthenticator
+import com.google.fhir.model.r4.FhirR4Json
 import com.google.fhir.model.r4.Resource
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -26,7 +27,6 @@ import io.ktor.client.plugins.DefaultRequest
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.cache.HttpCache
 import io.ktor.client.plugins.compression.ContentEncoding
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.request.delete
@@ -39,17 +39,56 @@ import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 
 /** Ktor implementation of the [FhirHttpService]. */
-internal class KtorHttpService(private val client: HttpClient) : FhirHttpService {
+internal class KtorHttpService(
+  private val client: HttpClient,
+  private val fhirJson: FhirR4Json = FhirR4Json(),
+) : FhirHttpService {
+
+  /**
+   * Sanitizes JSON to work around bugs in the kotlin-fhir library (fhir-model beta):
+   * 1. Truncates DateTime values in date-only fields (FhirDate.fromString() crash)
+   * 2. Strips "text" (Narrative) fields that cause NPE when status/div is missing
+   */
+  private fun sanitizeJson(json: String): String {
+    val sanitized = json.replace(dateFieldWithTimeRegex) { match ->
+      "\"${match.groupValues[1]}\" : \"${match.groupValues[2]}\""
+    }
+    return try {
+      val element = lenientJson.parseToJsonElement(sanitized)
+      lenientJson.encodeToString(JsonElement.serializer(), stripNarrativeText(element))
+    } catch (_: Exception) {
+      sanitized
+    }
+  }
+
+  private fun stripNarrativeText(element: JsonElement): JsonElement =
+    when (element) {
+      is JsonObject -> JsonObject(
+        element.jsonObject
+          .filterKeys { it != "text" || !looksLikeNarrative(element[it]) }
+          .mapValues { (_, v) -> stripNarrativeText(v) }
+      )
+      is kotlinx.serialization.json.JsonArray -> kotlinx.serialization.json.JsonArray(
+        element.jsonArray.map { stripNarrativeText(it) }
+      )
+      else -> element
+    }
+
+  private fun looksLikeNarrative(element: JsonElement?): Boolean =
+    element is JsonObject && element.containsKey("div")
 
   override suspend fun get(path: String, headers: Map<String, String>): Resource {
-    return client
-      .get(path) { headers { headers.forEach { (k, v) -> append(k, v) } } }
-      .body<Resource>()
+    val json: String =
+      client.get(path) { headers { headers.forEach { (k, v) -> append(k, v) } } }.body()
+    return fhirJson.decodeFromString(sanitizeJson(json)) as Resource
   }
 
   override suspend fun post(
@@ -57,13 +96,15 @@ internal class KtorHttpService(private val client: HttpClient) : FhirHttpService
     resource: Resource,
     headers: Map<String, String>,
   ): Resource {
-    return client
-      .post(path) {
-        contentType(ContentType.Application.Json)
-        headers { headers.forEach { (k, v) -> append(k, v) } }
-        setBody(resource)
-      }
-      .body<Resource>()
+    val json: String =
+      client
+        .post(path) {
+          contentType(ContentType.Application.Json)
+          headers { headers.forEach { (k, v) -> append(k, v) } }
+          setBody(fhirJson.encodeToString(resource))
+        }
+        .body()
+    return fhirJson.decodeFromString(sanitizeJson(json)) as Resource
   }
 
   override suspend fun put(
@@ -71,13 +112,15 @@ internal class KtorHttpService(private val client: HttpClient) : FhirHttpService
     resource: Resource,
     headers: Map<String, String>,
   ): Resource {
-    return client
-      .put(path) {
-        contentType(ContentType.Application.Json)
-        headers { headers.forEach { (k, v) -> append(k, v) } }
-        setBody(resource)
-      }
-      .body<Resource>()
+    val json: String =
+      client
+        .put(path) {
+          contentType(ContentType.Application.Json)
+          headers { headers.forEach { (k, v) -> append(k, v) } }
+          setBody(fhirJson.encodeToString(resource))
+        }
+        .body()
+    return fhirJson.decodeFromString(sanitizeJson(json)) as Resource
   }
 
   override suspend fun patch(
@@ -85,20 +128,30 @@ internal class KtorHttpService(private val client: HttpClient) : FhirHttpService
     patchDocument: JsonArray,
     headers: Map<String, String>,
   ): Resource {
-    return client
-      .patch(path) {
-        contentType(ContentType.parse("application/json-patch+json"))
-        headers { headers.forEach { (k, v) -> append(k, v) } }
-        setBody(patchDocument)
-      }
-      .body<Resource>()
+    val json: String =
+      client
+        .patch(path) {
+          contentType(ContentType.parse("application/json-patch+json"))
+          headers { headers.forEach { (k, v) -> append(k, v) } }
+          setBody(patchDocument.toString())
+        }
+        .body()
+    return fhirJson.decodeFromString(sanitizeJson(json)) as Resource
   }
 
   override suspend fun delete(path: String, headers: Map<String, String>): Resource {
-    return client.delete(path) { headers { headers.forEach { (k, v) -> append(k, v) } } }.body()
+    val json: String =
+      client.delete(path) { headers { headers.forEach { (k, v) -> append(k, v) } } }.body()
+    return fhirJson.decodeFromString(sanitizeJson(json)) as Resource
   }
 
   companion object {
+    private val lenientJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /** Matches FHIR date-only fields that incorrectly contain DateTime values. */
+    private val dateFieldWithTimeRegex =
+      Regex(""""(birthDate|deceasedDate)"\s*:\s*"(\d{4}-\d{2}-\d{2})T[^"]*"""")
+
     fun builder(baseUrl: String, networkConfiguration: NetworkConfiguration) =
       Builder(baseUrl, networkConfiguration)
   }
@@ -118,15 +171,6 @@ internal class KtorHttpService(private val client: HttpClient) : FhirHttpService
 
     fun build(): KtorHttpService {
       val client = HttpClient {
-        install(ContentNegotiation) {
-          json(
-            Json {
-              ignoreUnknownKeys = true
-              encodeDefaults = true
-            },
-          )
-        }
-
         install(HttpTimeout) {
           connectTimeoutMillis = networkConfiguration.connectionTimeOut * 1000
           requestTimeoutMillis = networkConfiguration.readTimeOut * 1000
@@ -141,8 +185,9 @@ internal class KtorHttpService(private val client: HttpClient) : FhirHttpService
           install(HttpCache)
         }
 
-        authenticator?.let {
-          install(DefaultRequest) {
+        install(DefaultRequest) {
+          url(baseUrl)
+          authenticator?.let {
             headers {
               val authMethod = it.getAuthenticationMethod()
               append(HttpHeaders.Authorization, authMethod.getAuthorizationHeader())

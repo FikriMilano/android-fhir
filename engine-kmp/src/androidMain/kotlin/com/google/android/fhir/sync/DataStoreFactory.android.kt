@@ -20,7 +20,10 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 
+private var dataStoreInstance: DataStore<Preferences>? = null
+
 @PublishedApi
-internal fun createDataStore(context: Context): DataStore<Preferences> = createDataStore {
-  context.filesDir.resolve(fhirDataStoreFileName).absolutePath
-}
+internal fun createDataStore(context: Context): DataStore<Preferences> =
+  dataStoreInstance ?: createDataStore {
+    context.filesDir.resolve(fhirDataStoreFileName).absolutePath
+  }.also { dataStoreInstance = it }

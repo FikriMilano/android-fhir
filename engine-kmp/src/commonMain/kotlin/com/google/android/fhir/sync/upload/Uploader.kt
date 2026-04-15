@@ -93,7 +93,7 @@ internal class Uploader(
       when {
         bundleEntry.resource != null && bundleEntry.resource is DomainResource ->
           ResourceUploadResponseMapping(localChanges, bundleEntry.resource as DomainResource)
-        bundleEntry.resource != null && bundleEntry.response != null ->
+        bundleEntry.response != null ->
           BundleComponentUploadResponseMapping(localChanges, bundleEntry.response!!)
         else ->
           throw IllegalStateException(
